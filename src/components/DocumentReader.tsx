@@ -135,15 +135,13 @@ const SentenceSpan = React.memo(
       );
     } else {
       const tokens = tokenizeSentenceWords(bodyText, detectedLang);
-      const charIdx = charIndex ?? 0;
+      // charIndex null (between sentences) means NO active word — never fall back to word 1
+      const charIdx = charIndex;
       let activeTokenIdx = -1;
-      if (playing) {
+      if (playing && charIdx !== null) {
         activeTokenIdx = tokens.findIndex((t) => t.isWord && charIdx >= t.start && charIdx < t.end);
         if (activeTokenIdx === -1) {
           activeTokenIdx = tokens.findIndex((t) => t.isWord && t.start >= charIdx);
-        }
-        if (activeTokenIdx === -1) {
-          activeTokenIdx = tokens.findIndex((t) => t.isWord);
         }
       }
       content = (
@@ -620,7 +618,7 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
                                   wordMode={highlightMode === 'word'}
                                   sentMode={highlightMode === 'sentence'}
                                   playing={isPlaying}
-                                  charIndex={isSentenceActive ? (activeWordCharIndex ?? 0) : null}
+                                  charIndex={isSentenceActive ? activeWordCharIndex : null}
                                   detectedLang={document.detectedLanguage}
                                   themeWord={currentTheme.word}
                                   themeSentence={currentTheme.sentence}

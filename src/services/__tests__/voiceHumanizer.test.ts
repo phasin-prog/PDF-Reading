@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { humanizeSpeechText } from '../../utils/voiceHumanizer';
+import { humanizeSpeechText, calculateDynamicSentenceUtterance } from '../../utils/voiceHumanizer';
 
 describe('humanizeSpeechText', () => {
   it('skips standalone page footers', () => {
@@ -28,5 +28,34 @@ describe('humanizeSpeechText', () => {
   it('returns empty for empty input', () => {
     expect(humanizeSpeechText('')).toBe('');
     expect(humanizeSpeechText('   ')).toBe('');
+  });
+
+  it('collapses stacked punctuation clusters', () => {
+    expect(humanizeSpeechText('He said, , that it works.')).toBe('He said, that it works.');
+    expect(humanizeSpeechText('Note: : the result.')).toBe('Note: the result.');
+    expect(humanizeSpeechText('Wait;;; really?')).toBe('Wait; really?');
+  });
+});
+
+describe('calculateDynamicSentenceUtterance', () => {
+  it('boosts year sentences instead of slowing them', () => {
+    const withYear = calculateDynamicSentenceUtterance('Jung published this in 1976.', 1.0, 1.0);
+    const plain = calculateDynamicSentenceUtterance('Jung published this work.', 1.0, 1.0);
+    expect(withYear.rate).toBeGreaterThan(plain.rate);
+  });
+
+  it('never stacks below 88% of base rate', () => {
+    // worst case: long + dense + slow profile base
+    const out = calculateDynamicSentenceUtterance(
+      'A very long philosophical statement with colons: it keeps going and going past one hundred and sixty characters total.',
+      0.8,
+      1.0
+    );
+    expect(out.rate).toBeGreaterThanOrEqual(0.8 * 0.88);
+  });
+
+  it('keeps parenthetical clauses near base rate', () => {
+    const out = calculateDynamicSentenceUtterance('He said (quite clearly) that it works.', 1.0, 1.0);
+    expect(out.rate).toBeGreaterThanOrEqual(0.97);
   });
 });

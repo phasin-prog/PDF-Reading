@@ -194,40 +194,55 @@ export function calculateDynamicSentenceUtterance(
 
   const trimmed = sentence.trim();
 
+  // 0. Year fast-path: sentences carrying a year (1976, 1995, 2567...) get a
+  // slight lift — digit clusters are already slow to articulate, never slow them further.
+  const hasYear = /\b(?:1[0-9]{3}|20[0-9]{2}|24[0-9]{2}|25[0-9]{2})s?\b/.test(trimmed);
+  const yearBoost = hasYear ? 1.06 : 1.0;
+  if (hasYear) {
+    cadenceDescription = 'Year Crisp Cadence';
+  }
+
   // 1. Inquisitive sentence ending with '?'
   if (trimmed.endsWith('?') || /^(why|how|what|where|who|when|is|are|can|could|would|should|does|do)\b/i.test(trimmed)) {
-    rate = baseRate * 0.94; // slightly slower for clear inquisitive phrasing
+    rate = baseRate * 0.94 * yearBoost; // slightly slower for clear inquisitive phrasing
     pitch = basePitch * 1.05; // natural rising intonation at question end
     pauseBonusMs = 120;
     cadenceDescription = 'Inquisitive Rising Cadence';
   }
   // 2. Energetic/Exclamatory sentence ending with '!'
   else if (trimmed.endsWith('!')) {
-    rate = baseRate * 1.03;
+    rate = baseRate * 1.03 * yearBoost;
     pitch = basePitch * 1.06;
     volume = Math.min(1.0, baseVolume * 1.05);
     cadenceDescription = 'Emphatic Energetic Cadence';
   }
   // 3. Dense philosophical/psychoanalytic statement (>160 chars or containing colons/semicolons)
   else if (trimmed.length > 160 || /[:;]/.test(trimmed)) {
-    rate = baseRate * 0.92; // deliberate, contemplative pace for complex concepts
+    rate = baseRate * 0.92 * yearBoost; // deliberate, contemplative pace for complex concepts
     pitch = basePitch * 0.97; // warm, resonant pitch
     pauseBonusMs = 180;
     cadenceDescription = 'Deep Philosophical Measured Cadence';
   }
   // 4. Short transition clause (<40 chars or starting with transitional adverbs)
   else if (trimmed.length < 40 || /^(however|therefore|thus|furthermore|for instance|for example|in fact|indeed)\b/i.test(trimmed)) {
-    rate = baseRate * 1.02; // crisp, energetic transition
+    rate = baseRate * 1.02 * yearBoost; // crisp, energetic transition
     pitch = basePitch * 1.02;
     pauseBonusMs = 60;
     cadenceDescription = 'Crisp Transition Cadence';
   }
-  // 5. Parenthetical / Quoted clause
+  // 5. Parenthetical / Quoted clause — barely slower now (quotes are stripped
+  // downstream anyway); parens only mark a reflective aside, not a crawl.
   else if (/^["'«]/.test(trimmed) || /[\(\)]/.test(trimmed)) {
-    rate = baseRate * 0.95;
+    rate = baseRate * 0.98 * yearBoost;
     pitch = basePitch * 1.03;
     cadenceDescription = 'Reflective Narrative Cadence';
+  } else if (hasYear) {
+    rate = baseRate * yearBoost;
   }
+
+  // Anti-stack floor: profile × cadence × dynamic must never compound below 88%
+  // of base (previously 0.88×0.90×0.92 ≈ 0.73× — the "everything is slow" bug).
+  rate = Math.max(rate, baseRate * 0.88);
 
   return {
     rate: Math.max(0.5, Math.min(2.0, rate)),
@@ -410,6 +425,10 @@ export function humanizeSpeechText(rawText: string): string {
   text = text
     // Replace em-dashes and long hyphens with comma pauses so TTS breathes naturally
     .replace(/[\u2014\u2013]|--+/g, ', ')
+    // Collapse stacked delimiters from OCR/scan noise (", , : :" -> ","):
+    // each extra mark spawns its own utterance + pause, which reads as a crawl
+    .replace(/([,;:])(?:\s*[,:;])+/g, '$1')
+    .replace(/([!?])\1{2,}/g, '$1')
     // Normalize multiple periods or ellipses with breathing space
     .replace(/\.{3,}/g, '... ')
     // Normalize quotes around terms

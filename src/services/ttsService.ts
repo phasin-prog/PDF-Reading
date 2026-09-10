@@ -54,15 +54,25 @@ export function splitSentenceIntoClauses(
     const clauseText = raw.substring(lastIndex, endMatchIndex);
 
     if (clauseText.trim()) {
-      const isCommaOrDash = /[,;:—\u2014]/.test(match[1]);
-      const pauseMs = isCommaOrDash ? config.commaPauseMs : config.clausePauseMs;
+      // Punctuation-only fragment (",", ":") gets NO utterance of its own —
+      // fold a single capped pause into the previous clause instead. Each
+      // stray utterance costs ~200ms startup + its pause, which reads as a crawl.
+      if (/^[,;:\s—–-]+$/.test(clauseText)) {
+        const prev = clauses[clauses.length - 1];
+        if (prev) {
+          prev.pauseAfterMs = Math.min(400, prev.pauseAfterMs + 120);
+        }
+      } else {
+        const isCommaOrDash = /[,;:—\u2014]/.test(match[1]);
+        const pauseMs = isCommaOrDash ? config.commaPauseMs : config.clausePauseMs;
 
-      clauses.push({
-        text: clauseText,
-        startCharIndex: lastIndex,
-        length: clauseText.length,
-        pauseAfterMs: pauseMs,
-      });
+        clauses.push({
+          text: clauseText,
+          startCharIndex: lastIndex,
+          length: clauseText.length,
+          pauseAfterMs: pauseMs,
+        });
+      }
     }
 
     lastIndex = endMatchIndex;
@@ -1211,23 +1221,26 @@ export class TTSEngine {
     }
 
     if (isBuiltinVoice) {
-      this.callbacks.onSentenceStart?.(this.currentSentenceIndex, rawSentence);
       ambienceEngine.setSpeakingState(true);
-
-      // Trigger initial word highlight immediately
-      if (wordRanges.length > 0) {
-        this.callbacks.onWordBoundary?.({
-          sentenceIndex: this.currentSentenceIndex,
-          charIndex: wordRanges[0].charIndex,
-          charLength: wordRanges[0].charLength,
-          word: wordRanges[0].word,
-        });
-      }
-
       this.prefetchUpcomingSentences(this.currentSentenceIndex, cloudVoiceName);
 
       const gen = this.generation;
       const sentenceIdx = this.currentSentenceIndex;
+      // Fires when audio ACTUALLY starts — never highlight during fetch latency
+      let started = false;
+      const fireSentenceStart = () => {
+        if (started || gen !== this.generation) return;
+        started = true;
+        this.callbacks.onSentenceStart?.(sentenceIdx, rawSentence);
+        if (wordRanges.length > 0) {
+          this.callbacks.onWordBoundary?.({
+            sentenceIndex: sentenceIdx,
+            charIndex: wordRanges[0].charIndex,
+            charLength: wordRanges[0].charLength,
+            word: wordRanges[0].word,
+          });
+        }
+      };
       this.fetchStudioAudio(textToSpeak, cloudVoiceName)
         .then((audioDataUrl) => {
           if (gen !== this.generation || !this.isPlaying || this.isPaused) return;
@@ -1316,6 +1329,7 @@ export class TTSEngine {
             audio.volume = 0;
             audio.play().then(() => {
               if (gen !== this.generation) return;
+              fireSentenceStart();
               const steps = 6;
               let s = 0;
               const fade = setInterval(() => {
