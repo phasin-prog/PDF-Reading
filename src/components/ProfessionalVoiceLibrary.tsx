@@ -31,13 +31,14 @@ import {
   CheckCircle2,
   FileText,
 } from 'lucide-react';
-import { TTSVoiceInfo, VoiceNarratorProfile, CadenceMode } from '../types';
+import { TTSVoiceInfo, VoiceNarratorProfile, CadenceMode, StorageQuotaStats } from '../types';
 import { ttsEngine, BUILTIN_STUDIO_VOICES } from '../services/ttsService';
 import { PodcastEQPreset, PODCAST_EQ_PRESETS } from '../utils/podcastEqualizer';
 import { CADENCE_MODES } from '../utils/cadenceSettings';
 import { NARRATOR_PROFILES } from '../utils/voiceHumanizer';
 import { AmbienceSoundscape, AMBIENCE_PRESETS, ambienceEngine } from '../services/ambienceService';
 import { offlineAudioStorage, CacheStats } from '../services/offlineAudioStorage';
+import { StorageQuotaManager } from '../services/storageQuotaManager';
 
 export interface VoiceStudioPreset {
   id: string;
@@ -339,7 +340,8 @@ export const ProfessionalVoiceLibrary: React.FC<ProfessionalVoiceLibraryProps> =
   const [customTestText, setCustomTestText] = useState('The privilege of a lifetime is to become who you truly are.');
 
   // Offline Vault stats
-  const [cacheStats, setCacheStats] = useState<CacheStats>({ count: 0, totalBytes: 0, formattedSize: '0 KB', voiceBreakdown: {} });
+  const [cacheStats, setCacheStats] = useState<CacheStats>({ count: 0, totalSizeBytes: 0, formattedSize: '0 B', voiceBreakdown: {} });
+  const [quotaStats, setQuotaStats] = useState<StorageQuotaStats | null>(null);
   const [isPrecaching, setIsPrecaching] = useState(false);
   const [precacheProgress, setPrecacheProgress] = useState<{ current: number; total: number; percent: number; currentText: string }>({
     current: 0,
@@ -356,6 +358,12 @@ export const ProfessionalVoiceLibrary: React.FC<ProfessionalVoiceLibraryProps> =
       setCacheStats(stats);
     } catch (e) {
       console.warn('Failed to fetch cache stats:', e);
+    }
+    try {
+      const quota = await StorageQuotaManager.getStorageStats();
+      setQuotaStats(quota);
+    } catch (e) {
+      console.warn('Failed to fetch quota stats:', e);
     }
   };
 
@@ -417,16 +425,37 @@ export const ProfessionalVoiceLibrary: React.FC<ProfessionalVoiceLibraryProps> =
     }, 3000);
   };
 
-  // Pre-cache Current Document sentences
+  // Pre-cache Current Document sentences (chunked, cancellable, quota-guarded)
   const handlePrecacheDocument = async () => {
     if (!documentSentences || documentSentences.length === 0) return;
+
+    const cleanList = documentSentences.filter((s) => s && s.trim().length > 0);
+    const total = cleanList.length;
+
+    // Quota guard: ~120KB per sentence estimate; require 80% headroom
+    try {
+      if (typeof navigator !== 'undefined' && navigator.storage?.estimate) {
+        const est = await navigator.storage.estimate();
+        const available = est.quota && est.usage ? est.quota - est.usage : Infinity;
+        const estimateNeed = total * 120 * 1024;
+        if (available !== Infinity && estimateNeed > available * 0.8) {
+          setPrecacheSuccessToast(
+            `พื้นที่ไม่พอ: ต้อง ~${(estimateNeed / 1048576).toFixed(0)}MB แต่เหลือ ${(available / 1048576).toFixed(0)}MB — ล้าง cache เก่าก่อน`
+          );
+          setTimeout(() => setPrecacheSuccessToast(null), 6000);
+          return;
+        }
+      }
+    } catch { /* estimate is best-effort */ }
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setPrecacheSuccessToast('ออฟไลน์อยู่: จะอุ่นเฉพาะประโยคที่เคยโหลดไว้แล้ว');
+      setTimeout(() => setPrecacheSuccessToast(null), 5000);
+    }
 
     setIsPrecaching(true);
     const selectedBuiltin = BUILTIN_STUDIO_VOICES.find((v) => v.voice.voiceURI === selectedVoiceURI);
     const targetCloudVoice = selectedBuiltin?.cloudVoiceName || 'Puck';
-
-    const cleanList = documentSentences.filter((s) => s && s.trim().length > 0);
-    const total = cleanList.length;
 
     setPrecacheProgress({ current: 0, total, percent: 0, currentText: 'Initializing offline audio engine...' });
 
@@ -447,7 +476,10 @@ export const ProfessionalVoiceLibrary: React.FC<ProfessionalVoiceLibraryProps> =
 
       await refreshCacheStats();
       setPrecacheSuccessToast(
-        `Cached ${result.successCount} sentences for offline listening (${targetCloudVoice} Voice)`
+        result.cancelled
+          ? `ยกเลิกแล้ว: เก็บได้ ${result.successCount}/${total} ประโยค (${targetCloudVoice})`
+          : `Cached ${result.successCount} sentences for offline listening (${targetCloudVoice} Voice)` +
+            (result.failCount > 0 ? `, ${result.failCount} failed (offline/skipped)` : '')
       );
       setTimeout(() => setPrecacheSuccessToast(null), 5000);
     } catch (err) {
@@ -573,7 +605,16 @@ export const ProfessionalVoiceLibrary: React.FC<ProfessionalVoiceLibraryProps> =
               <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" />
               <span>Caching audio for offline playback: {precacheProgress.current} / {precacheProgress.total} sentences</span>
             </span>
-            <span className="font-mono text-indigo-300">{precacheProgress.percent}%</span>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-indigo-300">{precacheProgress.percent}%</span>
+              <button
+                type="button"
+                onClick={() => ttsEngine.cancelPrecache()}
+                className="px-2 py-0.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[11px] font-semibold transition cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
           <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
             <div
@@ -875,6 +916,18 @@ export const ProfessionalVoiceLibrary: React.FC<ProfessionalVoiceLibraryProps> =
                 <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Vault Size</div>
                 <div className="text-sm font-mono font-bold text-emerald-400">{cacheStats.formattedSize}</div>
               </div>
+              {quotaStats && (
+                <>
+                  <div className="h-6 w-px bg-slate-800" />
+                  <div className="text-right">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Device</div>
+                    <div className="text-sm font-mono font-bold text-slate-200">
+                      {StorageQuotaManager.formatBytes(quotaStats.usedBytes)} / {StorageQuotaManager.formatBytes(quotaStats.quotaBytes)}
+                      <span className="text-slate-400"> ({quotaStats.usagePercent}%)</span>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 

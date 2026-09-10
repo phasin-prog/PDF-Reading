@@ -1,6 +1,11 @@
 /**
  * Priority Prefetch Scheduler & Queue Orchestrator
  *
+ * DEPRECATED (offline-first): TTSEngine now owns prefetch via prefetchUpcomingSentences()
+ * with a unified computeAudioCacheKey (rate/pitch/profile/cadence). This scheduler is kept
+ * for background chapter pre-cache only and is NOT wired to playback. Do not use for
+ * live sentence prefetch unless setFetchFunction is explicitly configured.
+ *
  * Implements priority-weighted pre-fetching:
  * - Priority 0: Active sentence (immediate execution)
  * - Priority 1: Next segment (+1)

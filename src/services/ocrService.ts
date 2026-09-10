@@ -86,17 +86,19 @@ export function isScannedDocument(doc: DocumentItem): boolean {
 }
 
 /**
- * Runs OCR on a single page image using Gemini 3.8 Flash Vision server API or Tesseract.js client worker
+ * Runs OCR on a single page image using Gemini 2.5 Flash Vision server API or Tesseract.js client worker
+ * Offline-first: when navigator reports offline, skip Gemini network call and go straight to local Tesseract.
  */
 export async function runOcrOnImage(
   dataUrl: string,
   preferredEngine: OcrEngine = 'gemini',
   onProgress?: (statusMsg: string) => void
 ): Promise<OcrResult> {
-  // Option A: Try Gemini 3.8 Flash Vision AI OCR endpoint
-  if (preferredEngine === 'gemini') {
+  const offline = typeof navigator !== 'undefined' && !navigator.onLine;
+  // Option A: Try Gemini 2.5 Flash Vision AI OCR endpoint (online only)
+  if (preferredEngine === 'gemini' && !offline) {
     try {
-      if (onProgress) onProgress('Sending page image to Gemini 3.8 Flash AI Vision OCR...');
+      if (onProgress) onProgress('Sending page image to Gemini 2.5 Flash AI Vision OCR...');
       const response = await fetch('/api/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -108,7 +110,7 @@ export async function runOcrOnImage(
         if (data.success && data.text && data.text.trim().length > 0) {
           return {
             text: data.text.trim(),
-            engineUsed: 'Gemini 3.8 Flash AI Vision',
+            engineUsed: 'Gemini 2.5 Flash AI Vision',
           };
         }
       }

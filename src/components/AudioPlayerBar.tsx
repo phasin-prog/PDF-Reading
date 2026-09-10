@@ -202,7 +202,7 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({
                 <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate flex items-center gap-1 font-mono">
                   <span>{NARRATOR_PROFILES[currentProfile]?.name || 'Philosopher'}</span>
                   <span>·</span>
-                  <span>{CADENCE_MODES[cadenceMode]?.label ? CADENCE_MODES[cadenceMode].label.split(' ')[0] : 'Natural'}</span>
+                  <span>{CADENCE_MODES[cadenceMode]?.name || 'Natural'}</span>
                 </div>
               </div>
             </button>

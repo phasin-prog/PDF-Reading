@@ -158,6 +158,9 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   };
 
   const handlePreviewVoice = (v: TTSVoiceInfo) => {
+    // Isolate audition tuning: restore main playback rate/pitch after preview
+    const mainRate = ttsEngine.getRate();
+    const mainPitch = ttsEngine.getPitch();
     setPreviewingURI(v.voice.voiceURI);
     ttsEngine.setRate(previewRate);
     ttsEngine.setPitch(previewPitch);
@@ -165,6 +168,8 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
 
     setTimeout(() => {
       setPreviewingURI(null);
+      ttsEngine.setRate(mainRate);
+      ttsEngine.setPitch(mainPitch);
     }, 4000);
   };
 
@@ -341,9 +346,18 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
                       </span>
                     )}
                   </div>
-                  <span className="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-slate-950/60 border border-slate-800/60">
-                    {v.lang}
-                  </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {v.isBuiltInStudioVoice ? (
+                      <span title="Cloud HD: needs internet first time, then cached offline" className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">CLOUD</span>
+                    ) : v.isLocal ? (
+                      <span title="On-device voice: works fully offline" className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">OFFLINE</span>
+                    ) : (
+                      <span title="System voice: may need internet" className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-300 border border-slate-500/30">SYSTEM</span>
+                    )}
+                    <span className="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-slate-950/60 border border-slate-800/60">
+                      {v.lang}
+                    </span>
+                  </div>
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed line-clamp-2">{v.description}</p>
               </div>

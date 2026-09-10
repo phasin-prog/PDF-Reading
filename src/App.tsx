@@ -66,6 +66,7 @@ export default function App() {
 
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [ttsError, setTtsError] = useState<string | null>(null);
   const [rate, setRate] = useState<number>(1.0);
   const [pitch, setPitch] = useState<number>(1.0);
   const [volume, setVolume] = useState<number>(1.0);
@@ -355,20 +356,36 @@ export default function App() {
   }, [refreshDocuments]);
 
   // Sync voice when current document or voice list changes
+  // Offline-first: when navigator reports offline, force a local (on-device) voice
+  // so playback never depends on Gemini cloud. Online keeps Studio HD default.
   useEffect(() => {
     if (voices.length === 0) return;
+    const offline = typeof navigator !== 'undefined' && !navigator.onLine;
 
     // Primary Baseline Voice: Prefer Built-in Studio HD US Male Voice (Puck / Charon)
     const studioMaleVoice = voices.find((v) => v.isBuiltInStudioVoice && v.isUSMale) || voices.find((v) => v.isBuiltInStudioVoice);
     const markVoice = voices.find((v) => v.name.toLowerCase().includes('mark'));
+    const localFallback =
+      voices.find((v) => !v.isBuiltInStudioVoice && v.isLocal && v.qualityGrade !== 'standard') ||
+      voices.find((v) => !v.isBuiltInStudioVoice && v.isLocal) ||
+      voices.find((v) => !v.isBuiltInStudioVoice);
 
     if (!selectedVoice) {
-      const defaultToUse = studioMaleVoice || markVoice || voices[0];
+      const defaultToUse = offline
+        ? (localFallback || markVoice || voices[0])
+        : (studioMaleVoice || markVoice || voices[0]);
       if (defaultToUse) {
         setSelectedVoice(defaultToUse);
         ttsEngine.setVoiceByURI(defaultToUse.voice.voiceURI);
         return;
       }
+    }
+
+    // If we just went offline while a cloud voice is selected, auto-switch to local
+    if (offline && selectedVoice?.isBuiltInStudioVoice && localFallback) {
+      setSelectedVoice(localFallback);
+      ttsEngine.setVoiceByURI(localFallback.voice.voiceURI);
+      return;
     }
 
     // Check if current voice matches document language
@@ -493,6 +510,10 @@ export default function App() {
       },
       onError: (err) => {
         console.warn('TTS error encountered:', err);
+        const msg = err?.message || 'Speech playback failed';
+        // Don't spam for user-initiated interrupts; surface real failures
+        if (/interrupted|canceled/i.test(msg)) return;
+        setTtsError(msg);
       },
     });
   }, []);
@@ -861,6 +882,13 @@ export default function App() {
   const totalSentencesInPage = currentPage?.sentences.length || 0;
   const totalPageCount = currentDoc?.pages.length || 1;
 
+  // Auto-dismiss TTS error toast after 6s
+  useEffect(() => {
+    if (!ttsError) return;
+    const t = setTimeout(() => setTtsError(null), 6000);
+    return () => clearTimeout(t);
+  }, [ttsError]);
+
   const playbackState: PlaybackState = {
     isPlaying,
     isPaused,
@@ -1195,6 +1223,20 @@ export default function App() {
 
       {/* Offline Status Indicator */}
       <OfflineIndicator />
+
+      {/* TTS Error Toast — tells user why audio failed + fallback state */}
+      {ttsError && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 max-w-md w-[calc(100%-2rem)] px-4 py-3 rounded-2xl bg-rose-600 text-white shadow-2xl flex items-start gap-3 text-sm">
+          <span className="font-semibold shrink-0">TTS ล้มเหลว</span>
+          <span className="flex-1 opacity-90">{ttsError} — ลองใช้เสียงระบบ / เช็ค GEMINI_API_KEY</span>
+          <button
+            onClick={() => setTtsError(null)}
+            className="px-2 py-0.5 rounded-lg bg-white/20 hover:bg-white/30 font-bold"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -94,7 +94,29 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,mjs,wasm}'],
+          // Offline-first: cache Tesseract OCR engine + traineddata CDN after first use.
+          // First OCR still needs internet once; repeats then work fully offline.
+          runtimeCaching: [
+            {
+              urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'tesseract-cdn',
+                expiration: { maxEntries: 20, maxAgeSeconds: 90 * 24 * 60 * 60 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
+            {
+              urlPattern: /^https:\/\/tessdata\.projectnaptha\.com\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'tessdata-traineddata',
+                expiration: { maxEntries: 10, maxAgeSeconds: 180 * 24 * 60 * 60 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
+          ],
         },
         devOptions: {
           enabled: true,

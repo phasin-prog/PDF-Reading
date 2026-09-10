@@ -2,11 +2,13 @@ import { TTSVoiceInfo, WordBoundaryInfo, VoiceNarratorProfile, CadenceMode } fro
 import {
   evaluateVoiceQuality,
   NARRATOR_PROFILES,
+  humanizeSpeechText,
+  calculateDynamicSentenceUtterance,
 } from '../utils/voiceHumanizer';
-import { PodcastEQPreset } from '../utils/podcastEqualizer';
-import { CADENCE_MODES } from '../utils/cadenceSettings';
+import { PodcastEQPreset, PODCAST_EQ_PRESETS } from '../utils/podcastEqualizer';
+import { CADENCE_MODES, calculatePunctuationPause } from '../utils/cadenceSettings';
 import { ambienceEngine } from './ambienceService';
-import { offlineAudioStorage } from './offlineAudioStorage';
+import { offlineAudioStorage, CacheStats } from './offlineAudioStorage';
 import { memoryAudioCache } from './memoryAudioCache';
 import { computeAudioCacheKey } from './audioCacheKey';
 import { DocumentNormalizer } from './documentNormalizer';
@@ -297,6 +299,88 @@ export class TTSEngine {
   private wordTimer: ReturnType<typeof setTimeout> | null = null;
   private hasReceivedNativeBoundary = false;
 
+  // Pro Podcast mastering chain (WebAudio) — applied to real TTS <audio>
+  private masteringCtx: AudioContext | null = null;
+  private masteringNodes: {
+    highpass: BiquadFilterNode;
+    warm: BiquadFilterNode;
+    presence: BiquadFilterNode;
+    air: BiquadFilterNode;
+    compressor: DynamicsCompressorNode;
+    master: GainNode;
+  } | null = null;
+  private masteringSource: MediaElementAudioSourceNode | null = null;
+
+  private ensureMasteringChain(): boolean {
+    if (typeof window === 'undefined') return false;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return false;
+      if (!this.masteringCtx) {
+        this.masteringCtx = new AudioCtx();
+      }
+      if (this.masteringCtx.state === 'suspended') {
+        this.masteringCtx.resume().catch(() => {});
+      }
+      const eqConfig = PODCAST_EQ_PRESETS[this.currentEQPreset] || PODCAST_EQ_PRESETS['pro-podcast'];
+      if (!this.masteringNodes) {
+        const ctx = this.masteringCtx;
+        const highpass = ctx.createBiquadFilter();
+        highpass.type = 'highpass';
+        highpass.frequency.value = 80;
+        const warm = ctx.createBiquadFilter();
+        warm.type = 'peaking';
+        warm.frequency.value = 250;
+        warm.Q.value = 1.2;
+        const presence = ctx.createBiquadFilter();
+        presence.type = 'peaking';
+        presence.frequency.value = 3500;
+        presence.Q.value = 1.5;
+        const air = ctx.createBiquadFilter();
+        air.type = 'highshelf';
+        air.frequency.value = 11000;
+        const compressor = ctx.createDynamicsCompressor();
+        const master = ctx.createGain();
+        master.gain.value = 1.0;
+        highpass.connect(warm);
+        warm.connect(presence);
+        presence.connect(air);
+        air.connect(compressor);
+        compressor.connect(master);
+        master.connect(ctx.destination);
+        this.masteringNodes = { highpass, warm, presence, air, compressor, master };
+      }
+      // Live-update gains from preset (so switching EQ is audible instantly)
+      const n = this.masteringNodes;
+      n.warm.gain.value = eqConfig.bands[1]?.gain ?? 0;
+      n.presence.gain.value = eqConfig.bands[3]?.gain ?? 0;
+      n.air.gain.value = eqConfig.bands[4]?.gain ?? 0;
+      n.compressor.threshold.value = eqConfig.compression.thresholdDb;
+      n.compressor.knee.value = eqConfig.compression.kneeDb;
+      n.compressor.ratio.value = parseFloat(eqConfig.compression.ratio.split(':')[0]) || 2.5;
+      n.compressor.attack.value = eqConfig.compression.attackMs / 1000;
+      n.compressor.release.value = eqConfig.compression.releaseMs / 1000;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private attachMastering(audio: HTMLAudioElement): void {
+    try {
+      if (!this.ensureMasteringChain() || !this.masteringCtx || !this.masteringNodes) return;
+      // One MediaElementSource per element; reconnect new element to shared chain
+      if (this.masteringSource) {
+        try { this.masteringSource.disconnect(); } catch {}
+        this.masteringSource = null;
+      }
+      this.masteringSource = this.masteringCtx.createMediaElementSource(audio);
+      this.masteringSource.connect(this.masteringNodes.highpass);
+    } catch {
+      // Fallback to plain <audio> playback
+    }
+  }
+
   constructor() {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       this.synth = window.speechSynthesis;
@@ -526,6 +610,14 @@ export class TTSEngine {
     this.pitch = Math.max(0.5, Math.min(1.5, newPitch));
   }
 
+  public getRate(): number {
+    return this.rate;
+  }
+
+  public getPitch(): number {
+    return this.pitch;
+  }
+
   public setVolume(newVolume: number) {
     this.volume = Math.max(0, Math.min(1, newVolume));
     if (this.currentUtterance) {
@@ -552,6 +644,10 @@ export class TTSEngine {
     }
   }
 
+  public isOnline(): boolean {
+    return typeof navigator === 'undefined' ? true : navigator.onLine;
+  }
+
   // Fetch or retrieve cached HD Studio Audio (Multi-Tier: RAM -> IndexedDB Offline Vault -> Gemini API)
   public async fetchStudioAudio(text: string, voiceName: string, metadata?: { docId?: string; chapterId?: string; sentenceIndex?: number }): Promise<string> {
     const cleanText = DocumentNormalizer.normalizeForTTS(text);
@@ -569,10 +665,13 @@ export class TTSEngine {
     if (memCache) return memCache;
 
     // 2. Tier 2: Persistent IndexedDB Offline Storage (1-2ms, works 100% OFFLINE)
+    // NOTE: must use the same full key (rate/pitch/profile/cadence) as RAM cache, else offline hits miss.
     try {
       const offlineCached = await offlineAudioStorage.getAudioClip(voiceName, cleanText, {
         rate: this.rate,
         pitch: this.pitch,
+        profile: this.currentProfile,
+        cadenceMode: this.currentCadenceMode,
       });
       if (offlineCached) {
         memoryAudioCache.set(audioKey, offlineCached);
@@ -582,7 +681,13 @@ export class TTSEngine {
       console.warn('TTS: Offline vault retrieval failed', err);
     }
 
-    // 3. Tier 3: Network API call to Gemini TTS engine
+    // 3. Offline-first: never hit network when browser reports offline.
+    // Cached audio above still plays 100% offline; uncached falls back to local WebSpeech.
+    if (!this.isOnline()) {
+      throw new Error('Offline: audio not cached, using local voice');
+    }
+
+    // 4. Tier 3: Network API call to Gemini TTS engine
     const response = await fetch('/api/tts/generate', {
       method: 'POST',
       headers: {
@@ -613,41 +718,68 @@ export class TTSEngine {
       ...metadata,
       rate: this.rate,
       pitch: this.pitch,
+      profile: this.currentProfile,
+      cadenceMode: this.currentCadenceMode,
     });
 
     return dataUrl;
   }
 
   // Prefetch upcoming sentences in background with high performance lookahead window
+  // Offline-first: skip network prefetch entirely when offline (cache checks are cheap, fetches are not)
   private prefetchUpcomingSentences(currentIndex: number, voiceName: string) {
-    const lookahead = [1, 2, 3, 4];
-    for (const offset of lookahead) {
-      const targetIdx = currentIndex + offset;
-      if (targetIdx < this.sentences.length) {
-        const raw = this.sentences[targetIdx];
-        const text = humanizeSpeechText(raw);
-        if (text && text.trim()) {
-          const clean = text.trim();
-          const cacheKey = `${voiceName}:${clean}`;
-          if (!this.audioCache.has(cacheKey)) {
-            // Check IndexedDB and fetch if needed
-            offlineAudioStorage.hasAudioClip(voiceName, clean).then((hasClip) => {
-              if (!hasClip) {
-                this.fetchStudioAudio(clean, voiceName, { sentenceIndex: targetIdx }).catch(() => {});
-              }
+    try {
+      if (!this.isOnline()) return;
+      const lookahead = [1, 2, 3, 4];
+      for (const offset of lookahead) {
+        const targetIdx = currentIndex + offset;
+        if (targetIdx < this.sentences.length) {
+          const raw = this.sentences[targetIdx];
+          const text = humanizeSpeechText(raw);
+          if (text && text.trim()) {
+            const clean = text.trim();
+            const audioKey = computeAudioCacheKey({
+              text: clean,
+              voiceName,
+              rate: this.rate,
+              pitch: this.pitch,
+              profile: this.currentProfile,
+              cadenceMode: this.currentCadenceMode,
             });
+            if (!memoryAudioCache.has(audioKey)) {
+              // Check IndexedDB and fetch if needed (same full key or offline hits miss)
+              offlineAudioStorage.hasAudioClip(voiceName, clean, {
+                rate: this.rate,
+                pitch: this.pitch,
+                profile: this.currentProfile,
+                cadenceMode: this.currentCadenceMode,
+              }).then((hasClip) => {
+                if (!hasClip) {
+                  this.fetchStudioAudio(clean, voiceName, { sentenceIndex: targetIdx }).catch(() => {});
+                }
+              }).catch(() => {});
+            }
           }
         }
       }
+    } catch {
+      // Prefetch must never crash playback
     }
   }
 
   // Pre-cache entire chapter / document sentences into Offline Storage
+  // Chunked (4 concurrent) + cancellable. Check cancelPrecache() from UI to abort long books.
+  private precacheCancelled = false;
+
+  public cancelPrecache(): void {
+    this.precacheCancelled = true;
+  }
+
   public async precacheChapterSentences(
     sentences: string[],
     voiceName = 'Puck',
     onProgress?: (completed: number, total: number, currentText: string) => void
-  ): Promise<{ successCount: number; failCount: number }> {
+  ): Promise<{ successCount: number; failCount: number; cancelled: boolean }> {
     const cleanItems = sentences
       .map((s) => humanizeSpeechText(s).trim())
       .filter((t) => t.length > 0);
@@ -656,13 +788,34 @@ export class TTSEngine {
     let completed = 0;
     let successCount = 0;
     let failCount = 0;
+    this.precacheCancelled = false;
+
+    // Offline-first: precaching needs network by definition (unless already cached)
+    if (!this.isOnline()) {
+      // Still warm RAM from IndexedDB for already-cached items
+      for (let i = 0; i < cleanItems.length; i++) {
+        if (this.precacheCancelled) break;
+        try {
+          await this.fetchStudioAudio(cleanItems[i], voiceName, { sentenceIndex: i });
+          successCount++;
+        } catch {
+          failCount++;
+        } finally {
+          completed++;
+          onProgress?.(completed, total, cleanItems[i]);
+        }
+      }
+      return { successCount, failCount, cancelled: this.precacheCancelled };
+    }
 
     // Process in batches of 4 for optimal network concurrency
     const batchSize = 4;
     for (let i = 0; i < cleanItems.length; i += batchSize) {
+      if (this.precacheCancelled) break;
       const chunk = cleanItems.slice(i, i + batchSize);
       await Promise.all(
         chunk.map(async (text, cIdx) => {
+          if (this.precacheCancelled) return;
           try {
             await this.fetchStudioAudio(text, voiceName, { sentenceIndex: i + cIdx });
             successCount++;
@@ -676,7 +829,7 @@ export class TTSEngine {
       );
     }
 
-    return { successCount, failCount };
+    return { successCount, failCount, cancelled: this.precacheCancelled };
   }
 
   // Get current offline storage statistics
@@ -686,7 +839,7 @@ export class TTSEngine {
 
   // Clear all offline stored audio
   public async clearOfflineCache(): Promise<void> {
-    this.audioCache.clear();
+    memoryAudioCache.clear();
     await offlineAudioStorage.clearAudioCache();
   }
 
@@ -891,8 +1044,11 @@ export class TTSEngine {
           this.currentAudioElement = audio;
           audio.playbackRate = this.rate;
           audio.volume = this.volume;
+          this.attachMastering(audio);
 
           let lastWordIdx = -1;
+          // Weight words by length so highlight tracks natural speech, not linear steps
+          const totalWeight = wordRanges.reduce((s, w) => s + Math.max(1, w.word.length), 0) || 1;
 
           // Accurately map audio timeline to words in sentence
           const updateWordHighlight = () => {
@@ -902,10 +1058,14 @@ export class TTSEngine {
             const progressRatio = Math.max(0, Math.min(1, current / duration));
 
             if (wordRanges.length > 0) {
-              const targetIdx = Math.min(
-                wordRanges.length - 1,
-                Math.floor(progressRatio * wordRanges.length)
-              );
+              const targetWeight = progressRatio * totalWeight;
+              let acc = 0;
+              let targetIdx = 0;
+              for (let i = 0; i < wordRanges.length; i++) {
+                acc += Math.max(1, wordRanges[i].word.length);
+                if (acc >= targetWeight) { targetIdx = i; break; }
+                targetIdx = i;
+              }
               if (targetIdx !== lastWordIdx && wordRanges[targetIdx]) {
                 lastWordIdx = targetIdx;
                 this.callbacks.onWordBoundary?.({
@@ -948,10 +1108,27 @@ export class TTSEngine {
             this.playFallbackWebSpeech(rawSentence, textToSpeak, wordRanges, modeConfig);
           };
 
-          audio.play().catch((err) => {
-            console.warn('Auto-play audio failed, falling back:', err);
-            this.playFallbackWebSpeech(rawSentence, textToSpeak, wordRanges, modeConfig);
-          });
+          // Soft fade-in (60ms) to remove clicks + human breath feel
+          try {
+            audio.volume = 0;
+            audio.play().then(() => {
+              const steps = 6;
+              let s = 0;
+              const fade = setInterval(() => {
+                s++;
+                audio.volume = Math.min(this.volume, (this.volume * s) / steps);
+                if (s >= steps) clearInterval(fade);
+              }, 10);
+            }).catch((err) => {
+              console.warn('Auto-play audio failed, falling back:', err);
+              this.playFallbackWebSpeech(rawSentence, textToSpeak, wordRanges, modeConfig);
+            });
+          } catch {
+            audio.play().catch((err) => {
+              console.warn('Auto-play audio failed, falling back:', err);
+              this.playFallbackWebSpeech(rawSentence, textToSpeak, wordRanges, modeConfig);
+            });
+          }
         })
         .catch((err) => {
           console.warn('Studio TTS fetch failed, fallback to local synth:', err);
@@ -971,7 +1148,17 @@ export class TTSEngine {
     wordRanges: { charIndex: number; charLength: number; word: string }[],
     modeConfig: any
   ) {
-    if (!this.synth) return;
+    if (!this.synth || typeof SpeechSynthesisUtterance === 'undefined') {
+      console.warn('TTS: Web Speech unavailable, skipping to next sentence');
+      this.callbacks.onError?.(new Error('Web Speech synthesis unavailable in this browser'));
+      this.callbacks.onSentenceEnd?.(this.currentSentenceIndex);
+      if (this.isPlaying && !this.isPaused) {
+        this.sentencePauseTimer = setTimeout(() => {
+          if (this.isPlaying && !this.isPaused) this.nextSentence();
+        }, 300);
+      }
+      return;
+    }
 
     const clauses = splitSentenceIntoClauses(rawSentence, this.currentCadenceMode);
     let clauseIdx = 0;
@@ -1093,6 +1280,16 @@ export class TTSEngine {
         if (e.error !== 'interrupted' && e.error !== 'canceled') {
           console.warn('TTS Speech error:', e);
           this.callbacks.onError?.(new Error(`Speech error: ${e.error}`));
+          // Avoid stall: advance to next clause/sentence on real errors
+          clauseIdx++;
+          if (this.isPlaying && !this.isPaused) {
+            this.sentencePauseTimer = setTimeout(() => {
+              if (this.isPlaying && !this.isPaused) {
+                if (clauseIdx < clauses.length) playNextClause();
+                else this.nextSentence();
+              }
+            }, 300);
+          }
         }
       };
 
@@ -1134,6 +1331,8 @@ export class TTSEngine {
 
   public setEQPreset(preset: PodcastEQPreset) {
     this.currentEQPreset = preset;
+    // Refresh live mastering gains if chain already built
+    this.ensureMasteringChain();
   }
 
   public getEQPreset(): PodcastEQPreset {

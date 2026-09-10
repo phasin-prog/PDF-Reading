@@ -19,7 +19,13 @@ async function startServer() {
 
   // Health check route
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      ttsModel: 'gemini-2.5-flash-preview-tts',
+      ocrModel: 'gemini-2.5-flash',
+      hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+    });
   });
 
   // Professional AI Vision OCR Endpoint
@@ -45,7 +51,7 @@ async function startServer() {
       const ai = new GoogleGenAI({ apiKey });
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-2.5-flash',
         contents: [
           {
             role: 'user',
@@ -119,17 +125,22 @@ Guidelines:
   // Built-in Google Gemini Voice Pack HD Speech Generation Endpoint
   app.post('/api/tts/generate', async (req, res) => {
     try {
-      const { text, voiceName = 'Puck', speed = 1.0 } = req.body;
+      const { text, voiceName = 'Puck', speed, rate } = req.body;
+      // Client sends `rate`, older payloads send `speed` — accept both
+      const targetSpeed = Number(speed ?? rate ?? 1.0) || 1.0;
 
       if (!text || !text.trim()) {
         return res.status(400).json({ error: 'Text is required for TTS generation' });
+      }
+      if (text.trim().length > 4000) {
+        return res.status(413).json({ error: 'Text too long (max 4000 chars per request)', useFallback: true });
       }
 
       // Valid prebuilt voice names in Gemini TTS: Puck, Charon, Fenrir, Zephyr, Kore, Aoede
       const validVoices = ['Puck', 'Charon', 'Fenrir', 'Zephyr', 'Kore', 'Aoede'];
       const targetVoice = validVoices.includes(voiceName) ? voiceName : 'Puck';
       const cleanText = text.trim();
-      const cacheKey = `${targetVoice}:${cleanText}`;
+      const cacheKey = `${targetVoice}:s${targetSpeed}:${cleanText}`;
 
       // Check server-side memory cache first
       if (ttsServerCache.has(cacheKey)) {
@@ -140,7 +151,7 @@ Guidelines:
           mimeType: cached.mimeType,
           voiceName: targetVoice,
           cached: true,
-          engine: 'Google Gemini 3.1 Flash TTS (Server Cache)',
+          engine: 'Google Gemini 2.5 Flash TTS (Server Cache)',
         });
       }
 
@@ -155,7 +166,7 @@ Guidelines:
       const ai = new GoogleGenAI({ apiKey });
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-tts-preview',
+        model: 'gemini-2.5-flash-preview-tts',
         contents: [
           {
             parts: [
@@ -189,8 +200,16 @@ Guidelines:
       let finalAudioBase64 = rawBase64;
       let finalMimeType = 'audio/wav';
 
-      // If audio is raw PCM or format without header, wrap in standard WAV container
-      if (returnedMimeType.includes('pcm') || returnedMimeType.includes('raw') || returnedMimeType.includes('audio/L16')) {
+      // Gemini returns raw PCM as audio/L16;rate=24000. Wrap only header-less PCM.
+      // Pass through already-decodable containers (wav/mp3/mpeg/ogg) untouched.
+      const lowerMime = returnedMimeType.toLowerCase();
+      const isRawPcm =
+        lowerMime.includes('pcm') || lowerMime.includes('raw') || lowerMime.includes('audio/l16');
+      const isDecodable =
+        lowerMime.includes('audio/wav') || lowerMime.includes('audio/x-wav') ||
+        lowerMime.includes('audio/mp3') || lowerMime.includes('audio/mpeg') ||
+        lowerMime.includes('audio/ogg');
+      if (isRawPcm && !isDecodable) {
         const pcmBuffer = Buffer.from(rawBase64, 'base64');
         const wavBuffer = pcmToWavBuffer(pcmBuffer, 24000, 1, 16);
         finalAudioBase64 = wavBuffer.toString('base64');
@@ -216,7 +235,7 @@ Guidelines:
         mimeType: finalMimeType,
         voiceName: targetVoice,
         cached: false,
-        engine: 'Google Gemini 3.1 Flash TTS',
+        engine: 'Google Gemini 2.5 Flash TTS',
       });
     } catch (error: any) {
       console.error('Server TTS Generation error:', error);
@@ -262,7 +281,7 @@ Guidelines:
           }
 
           const response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-tts-preview',
+            model: 'gemini-2.5-flash-preview-tts',
             contents: [{ parts: [{ text: cleanText }] }],
             config: {
               responseModalities: ['AUDIO'],
@@ -286,7 +305,14 @@ Guidelines:
           let finalBase64 = rawBase64;
           let finalMime = 'audio/wav';
 
-          if (returnedMime.includes('pcm') || returnedMime.includes('raw') || returnedMime.includes('audio/L16')) {
+          const lowerBatchMime = (returnedMime || '').toLowerCase();
+          const isBatchPcm =
+            lowerBatchMime.includes('pcm') || lowerBatchMime.includes('raw') || lowerBatchMime.includes('audio/l16');
+          const isBatchDecodable =
+            lowerBatchMime.includes('audio/wav') || lowerBatchMime.includes('audio/x-wav') ||
+            lowerBatchMime.includes('audio/mp3') || lowerBatchMime.includes('audio/mpeg') ||
+            lowerBatchMime.includes('audio/ogg');
+          if (isBatchPcm && !isBatchDecodable) {
             const pcmBuffer = Buffer.from(rawBase64, 'base64');
             const wavBuffer = pcmToWavBuffer(pcmBuffer, 24000, 1, 16);
             finalBase64 = wavBuffer.toString('base64');

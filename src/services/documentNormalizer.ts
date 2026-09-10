@@ -48,17 +48,15 @@ export class DocumentNormalizer {
     }
 
     // 2. Fix hyphenation split across lines (e.g. "intel-\nlectual" -> "intellectual")
-    // Handles soft hyphens (\u00AD), standard hyphens (-), and em/en dashes
-    text = text.replace(/(\b[a-zA-Z]{2,})[-\u00AD]\s*\n\s*([a-zA-Z]{2,}\b)/g, '$1$2');
-    text = text.replace(/(\b[a-zA-Z]{2,})[-\u00AD]\s+([a-zA-Z]{2,}\b)/g, (match, p1, p2) => {
-      // Check if it looks like a single word broken by column wrap
-      const joined = `${p1}${p2}`.toLowerCase();
-      // Common split prefixes
-      if (['philos', 'psycho', 'unconscious', 'arche', 'conscious', 'individ', 'intel', 'symbol', 'experi'].some(prefix => joined.startsWith(prefix))) {
-        return `${p1}${p2}`;
-      }
-      return match;
-    });
+    // P0-4 (general rule): lowercase-letter + hyphen + optional whitespace/newline +
+    // lowercase-letter joins WITHOUT space. This covers English/German/academic compounds
+    // without an allowlist. Uppercase continuations (proper nouns) and digit breaks keep the hyphen.
+    // Soft hyphens (\u00AD) always join.
+    text = text.replace(/\u00AD/g, '');
+    text = text.replace(/(\p{Ll})[‐‑‒–—―-]\s*\n\s*(\p{Ll})/gu, '$1$2');
+    text = text.replace(/(\p{Ll})-\s*\n\s*(\p{Ll})/gu, '$1$2');
+    // Same-line wrap without newline (column wrap): "philo- sophical" -> join if both sides lowercase
+    text = text.replace(/(\p{Ll})-\s+(\p{Ll})/gu, '$1$2');
 
     // 3. Remove standalone running page numbers at borders (e.g. "\n124\n", "— 45 —", "[Page 12]")
     text = text.replace(/^\s*(?:—\s*)?\d{1,4}(?:\s*—)?\s*$/gm, '');
@@ -100,8 +98,9 @@ export class DocumentNormalizer {
     for (const [ligature, replacement] of Object.entries(LIGATURE_MAP)) {
       text = text.replaceAll(ligature, replacement);
     }
-    // Fix line-break hyphenations
-    text = text.replace(/(\b[a-zA-Z]{2,})[-\u00AD]\s*\n\s*([a-zA-Z]{2,}\b)/g, '$1$2');
+    // Fix line-break hyphenations (same general lowercase rule as TTS path)
+    text = text.replace(/\u00AD/g, '');
+    text = text.replace(/(\p{Ll})[‐‑‒–—―-]\s*\n\s*(\p{Ll})/gu, '$1$2');
     return text.trim();
   }
 }

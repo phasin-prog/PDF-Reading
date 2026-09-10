@@ -1,11 +1,18 @@
 // IndexedDB-powered Offline Audio Storage for Google Gemini Voice Pack
 // Enables high-performance, 0ms latency, zero-network playback once cached
 
-import { AudioSegmentRecord } from '../types';
+import { AudioSegmentRecord, VoiceNarratorProfile, CadenceMode } from '../types';
 import { vault } from './indexedDbVault';
 import { computeAudioCacheKey, computeStableHash } from './audioCacheKey';
 import { GEMINI_TTS_MODEL_ID, TTS_PIPELINE_VERSION } from '../constants/versions';
 import { DocumentNormalizer } from './documentNormalizer';
+
+export interface AudioClipLookup {
+  rate?: number; pitch?: number;
+  profile?: VoiceNarratorProfile; cadenceMode?: CadenceMode;
+  language?: string; modelId?: string;
+  docId?: string; chapterId?: string; sentenceIndex?: number;
+}
 
 export interface CachedAudioClip {
   cacheKey: string;
@@ -36,7 +43,7 @@ class OfflineAudioStorageService {
     voiceName: string,
     text: string,
     dataUrl: string,
-    metadata?: { docId?: string; chapterId?: string; sentenceIndex?: number; rate?: number; pitch?: number }
+    metadata?: AudioClipLookup
   ): Promise<void> {
     try {
       const clean = DocumentNormalizer.normalizeForTTS(text);
@@ -45,6 +52,10 @@ class OfflineAudioStorageService {
         voiceName,
         rate: metadata?.rate,
         pitch: metadata?.pitch,
+        profile: metadata?.profile,
+        cadenceMode: metadata?.cadenceMode,
+        language: metadata?.language,
+        modelId: metadata?.modelId,
       });
 
       const approxSizeBytes = Math.round((dataUrl.length * 3) / 4);
@@ -81,7 +92,7 @@ class OfflineAudioStorageService {
   public async getAudioClip(
     voiceName: string,
     text: string,
-    metadata?: { rate?: number; pitch?: number }
+    metadata?: AudioClipLookup
   ): Promise<string | null> {
     try {
       const clean = DocumentNormalizer.normalizeForTTS(text);
@@ -90,6 +101,10 @@ class OfflineAudioStorageService {
         voiceName,
         rate: metadata?.rate,
         pitch: metadata?.pitch,
+        profile: metadata?.profile,
+        cadenceMode: metadata?.cadenceMode,
+        language: metadata?.language,
+        modelId: metadata?.modelId,
       });
 
       const record = await vault.getAudioSegment(audioKey);
@@ -108,7 +123,7 @@ class OfflineAudioStorageService {
   public async hasAudioClip(
     voiceName: string,
     text: string,
-    metadata?: { rate?: number; pitch?: number }
+    metadata?: AudioClipLookup
   ): Promise<boolean> {
     try {
       const clean = DocumentNormalizer.normalizeForTTS(text);
@@ -117,6 +132,10 @@ class OfflineAudioStorageService {
         voiceName,
         rate: metadata?.rate,
         pitch: metadata?.pitch,
+        profile: metadata?.profile,
+        cadenceMode: metadata?.cadenceMode,
+        language: metadata?.language,
+        modelId: metadata?.modelId,
       });
 
       return await vault.hasAudioSegment(audioKey);

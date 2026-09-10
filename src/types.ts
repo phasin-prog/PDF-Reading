@@ -252,7 +252,7 @@ export interface AudioSegmentRecord {
   textHash: string;
   normalizedText: string;
   voiceId: string;            // 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr' | 'Kore' | 'Aoede'
-  modelId: string;            // 'gemini-3.1-flash-tts-preview'
+  modelId: string;            // 'gemini-2.5-flash-preview-tts'
   voiceSettingsHash: string;
   audioFormat: 'audio/wav' | 'audio/pcm' | 'audio/mp3';
   sampleRate: number;         // 24000

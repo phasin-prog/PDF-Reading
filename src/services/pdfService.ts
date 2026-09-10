@@ -47,6 +47,219 @@ export function isPageFooterMarker(text: string): boolean {
 }
 
 /**
+ * P0-1/P0-2: layout-aware PDF text ordering.
+ * PDF.js returns items in content-stream order (not reading order), so we:
+ * 1. sort by Y (top first, PDF origin is bottom-left) then X (left first),
+ * 2. group into visual lines with a font-relative tolerance,
+ * 3. detect 2-column pages and read left column fully before right column,
+ * 4. drop running headers (top zone, pages>1), bottom page-number zone,
+ *    and footnote-size text at the bottom — captions are KEPT for fidelity.
+ */
+interface PdfLayoutItem {
+  str: string;
+  x: number;
+  y: number;
+  fontSize: number;
+  width: number;
+  hasEOL: boolean;
+}
+
+function medianNum(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+function itemFontSize(item: any): number {
+  const t = item.transform;
+  if (Array.isArray(t) && t.length >= 6) {
+    const h = Math.hypot(t[2] || 0, t[3] || 0);
+    if (h > 0.5 && h < 200) return h;
+    const w = Math.abs(t[0] || 0);
+    if (w > 0.5 && w < 200) return w;
+  }
+  return 10;
+}
+
+function groupIntoLines(items: PdfLayoutItem[], yTol: number): PdfLayoutItem[][] {
+  const lines: PdfLayoutItem[][] = [];
+  let current: PdfLayoutItem[] = [];
+  let lineY = Infinity;
+  for (const it of items) {
+    if (current.length === 0) {
+      current = [it];
+      lineY = it.y;
+    } else if (Math.abs(it.y - lineY) <= yTol) {
+      current.push(it);
+    } else {
+      current.sort((a, b) => a.x - b.x);
+      lines.push(current);
+      current = [it];
+      lineY = it.y;
+    }
+  }
+  if (current.length > 0) {
+    current.sort((a, b) => a.x - b.x);
+    lines.push(current);
+  }
+  return lines;
+}
+
+function linesToText(lines: PdfLayoutItem[][], medianFont: number): string {
+  const out: string[] = [];
+  let prevY: number | null = null;
+  for (const line of lines) {
+    const lineY = line[0]?.y ?? 0;
+    const text = line.map((i) => i.str).join(' ').replace(/[ \t]+/g, ' ').trim();
+    if (!text) {
+      prevY = lineY;
+      continue;
+    }
+    if (prevY !== null) {
+      const gap = prevY - lineY; // lines are top-first, so gap is positive
+      out.push(gap > medianFont * 1.7 ? '\n\n' + text : '\n' + text);
+    } else {
+      out.push(text);
+    }
+    prevY = lineY;
+  }
+  return out.join('').replace(/\n{3,}/g, '\n\n');
+}
+
+/** Header-like single line: short, no terminal punctuation (running titles, chapter names). */
+function looksLikeRunningHeader(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.length > 140) return false;
+  if (/[.?!:…。！？]$/.test(t)) return false;
+  if (isPageFooterMarker(t)) return true;
+  // Typical running header: few words, title-ish, no digits-heavy content
+  return t.split(/\s+/).length <= 14;
+}
+
+function buildPageRawText(textContent: any, pageHeight: number, pageNum: number): string {
+  const rawItems: PdfLayoutItem[] = [];
+  for (const item of textContent.items || []) {
+    if (!('str' in item)) continue;
+    const s = (item as any).str as string;
+    const t = (item as any).transform;
+    if (!Array.isArray(t) || t.length < 6) {
+      if (s) rawItems.push({ str: s, x: 0, y: 0, fontSize: 10, width: 0, hasEOL: !!(item as any).hasEOL });
+      continue;
+    }
+    rawItems.push({
+      str: s,
+      x: t[4] || 0,
+      y: t[5] || 0,
+      fontSize: itemFontSize(item),
+      width: (item as any).width || 0,
+      hasEOL: !!(item as any).hasEOL,
+    });
+  }
+  const content = rawItems.filter((i) => i.str.trim().length > 0);
+  if (content.length === 0) return '';
+
+  const medianFont = medianNum(content.map((i) => i.fontSize)) || 10;
+  const yTol = Math.max(3.5, medianFont * 0.45);
+
+  // P0-2a: footnote-size text in bottom 14% (footnotes/endnotes) — drop before ordering.
+  // Guard: only when it is a minority, so uniformly-small pages are preserved.
+  const footnoteCandidates = content.filter(
+    (i) => i.y < pageHeight * 0.14 && i.fontSize <= medianFont * 0.82
+  );
+  let items = content;
+  if (footnoteCandidates.length > 0 && footnoteCandidates.length < content.length * 0.3) {
+    const drop = new Set(footnoteCandidates);
+    items = content.filter((i) => !drop.has(i));
+  }
+  if (items.length === 0) return '';
+
+  // P0-2b: bottom page-number zone (3.5%) + top running-header zone (pages > 1).
+  const body = items.filter((i) => i.y >= pageHeight * 0.035);
+  const bottomZone = items.filter((i) => i.y < pageHeight * 0.035);
+  // Keep bottom-zone text only if it looks like body (long line ending with punctuation)
+  const bottomText = bottomZone.map((i) => i.str).join(' ').trim();
+  const keepBottom = bottomText.length > 60 && /[.?!:…。！？]$/.test(bottomText) && !isPageFooterMarker(bottomText);
+
+  let topDropped: PdfLayoutItem[] = [];
+  let core: PdfLayoutItem[] = keepBottom ? body.concat(bottomZone) : body;
+  if (pageNum > 1) {
+    const topZone = core.filter((i) => i.y > pageHeight * 0.955);
+    if (topZone.length > 0 && topZone.length < core.length * 0.2) {
+      const topLine = topZone.map((i) => i.str).join(' ').replace(/\s+/g, ' ').trim();
+      if (looksLikeRunningHeader(topLine)) {
+        const drop = new Set(topZone);
+        topDropped = topZone;
+        core = core.filter((i) => !drop.has(i));
+      }
+    }
+  }
+  void topDropped;
+  if (core.length === 0) return '';
+
+  // P0-1: sort top-first (Y desc), then left-first (X asc)
+  const sorted = [...core].sort((a, b) => b.y - a.y || a.x - b.x);
+
+  // P0-1: two-column detection — both halves populated, middle gap nearly empty
+  const xs = sorted.map((i) => i.x);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const span = maxX - minX;
+  if (span > 100) {
+    const mid = (minX + maxX) / 2;
+    const band = span * 0.04;
+    let left = 0;
+    let right = 0;
+    let middle = 0;
+    for (const i of sorted) {
+      const cx = i.x + i.width * 0.5;
+      if (cx < mid - band) left++;
+      else if (cx > mid + band) right++;
+      else middle++;
+    }
+    const total = sorted.length;
+    if (left / total > 0.2 && right / total > 0.2 && middle / total < 0.15) {
+      const leftItems = sorted.filter((i) => i.x + i.width * 0.5 <= mid);
+      const rightItems = sorted.filter((i) => i.x + i.width * 0.5 > mid);
+      const leftText = linesToText(groupIntoLines(leftItems, yTol), medianFont);
+      const rightText = linesToText(groupIntoLines(rightItems, yTol), medianFont);
+      return (leftText + '\n\n' + rightText).replace(/\n{3,}/g, '\n\n');
+    }
+  }
+
+  return linesToText(groupIntoLines(sorted, yTol), medianFont);
+}
+
+/**
+ * P0-3: stitch a trailing incomplete sentence to the next page.
+ * Display text (page.text/paragraphs) stays faithful to the book; only the
+ * TTS sentence arrays are re-chained so playback never pauses mid-sentence.
+ */
+function looksIncompleteSentence(s: string): boolean {
+  const t = (s || '').trim();
+  if (!t || t.length < 8) return false;
+  if (isPageFooterMarker(t)) return false;
+  if (/[.?!…。！？]['"»”)\]]?\s*$/.test(t)) return false;
+  if (/^\[\d+\]|^\[§?\d+\]/.test(t)) return false;
+  return true;
+}
+
+export function stitchSentencesAcrossPages(pages: PageContent[]): void {
+  for (let i = 0; i < pages.length - 1; i++) {
+    const cur = pages[i];
+    const next = pages[i + 1];
+    if (!cur.sentences.length || !next.sentences.length) continue;
+    const tail = cur.sentences[cur.sentences.length - 1];
+    if (!looksIncompleteSentence(tail)) continue;
+    const head = next.sentences[0].trim();
+    if (!head || isPageFooterMarker(head)) continue;
+    // Move fragment forward: drop tail here, prepend to next head
+    cur.sentences = cur.sentences.slice(0, -1);
+    next.sentences = [tail.trim() + ' ' + head, ...next.sentences.slice(1)];
+  }
+}
+
+/**
  * Strips standalone trailing page numbers and footer markers from page text
  */
 export function cleanPageTextAndStripFooters(rawText: string): string {
@@ -228,36 +441,13 @@ export async function parsePdfArrayBuffer(
   for (let pageNum = 1; pageNum <= numPages; pageNum++) {
     const page = await pdfDoc.getPage(pageNum);
     const textContent = await page.getTextContent();
+    const viewport = page.getViewport({ scale: 1 });
 
-    // Group items into text lines
-    const textItems: string[] = [];
-    let lastY: number | null = null;
+    // P0-1/P0-2: layout-aware ordering (Y/X sort, 2-column, header/footnote strip)
+    const orderedRaw = buildPageRawText(textContent, viewport.height, pageNum);
 
-    for (const item of textContent.items) {
-      if ('str' in item) {
-        // If Y changes noticeably, detect line breaks vs paragraph breaks
-        if ('transform' in item && Array.isArray(item.transform)) {
-          const currentY = item.transform[5];
-          if (lastY !== null) {
-            const diffY = Math.abs(currentY - lastY);
-            if (diffY > 14) {
-              textItems.push('\n\n');
-            } else if (diffY > 5) {
-              textItems.push('\n');
-            }
-          }
-          lastY = currentY;
-        }
-        textItems.push(item.str);
-        if (item.hasEOL) {
-          textItems.push('\n');
-        }
-      }
-    }
-
-    // Join items preserving newlines while removing redundant horizontal spaces
-    const pageRawText = textItems
-      .join(' ')
+    // Join preserving newlines while removing redundant horizontal spaces
+    const pageRawText = orderedRaw
       .replace(/[ \t]+/g, ' ')
       .replace(/ *\n */g, '\n')
       .replace(/\n{3,}/g, '\n\n');
@@ -278,6 +468,9 @@ export async function parsePdfArrayBuffer(
       paragraphs: paragraphs.length > 0 ? paragraphs : [pageCleanText],
     });
   }
+
+  // P0-3: re-chain sentences split by page breaks (display text untouched)
+  stitchSentencesAcrossPages(pages);
 
   const detectedLang = detectLanguage(fullCombinedText);
   // Average reading speed: 150 words per minute
