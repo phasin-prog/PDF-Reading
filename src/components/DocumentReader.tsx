@@ -3,14 +3,10 @@ import {
   FileText,
   ChevronLeft,
   ChevronRight,
-  Volume2,
   Sparkles,
   BookOpen,
   Layers,
-  FileCheck,
   Zap,
-  Search,
-  Grid,
   Globe,
   Bookmark,
   Sliders,
@@ -18,9 +14,7 @@ import {
   Minimize2,
   Play,
   Pause,
-  Edit3,
   Trash2,
-  AlertTriangle,
   ScanText,
 } from 'lucide-react';
 import {
@@ -34,7 +28,6 @@ import {
   HighlightMode,
   PageViewMode,
 } from '../types';
-import { SessionStatsPanel } from './SessionStatsPanel';
 import { tokenizeSentenceWords } from '../utils/wordTokenizer';
 import { isScannedPage } from '../services/ocrService';
 
@@ -97,25 +90,19 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
   lineHeight = 'comfortable',
   paragraphIndent = 'standard',
   autoScroll,
-  sessionReadingSeconds,
-  sessionPagesCompleted,
   activeWordCharIndex = null,
   highlightMode = 'word',
   pageViewMode = 'single',
-  autoAdvancePage = true,
   zenMode = false,
   onToggleZenMode,
   onTogglePageViewMode,
-  onToggleAutoAdvancePage,
   onToggleHighlightMode,
-  onResetSession,
   onSelectSentence,
   onChangePage,
   onOpenLibrary,
   onInspectWord,
   onOpenPronunciationModal,
   onOpenOCR,
-  onOpenSearch,
   onOpenPageSelector,
   onOpenLanguageSwitcher,
   onOpenStyleModal,
@@ -126,9 +113,6 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
   onToggleBookmark,
   onTogglePlay,
   onDeleteDocument,
-  onChangeLineWidth,
-  onChangeFontSize,
-  onChangeLineHeight,
 }) => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
   const [pageHeightMode, setPageHeightMode] = useState<'fit' | 'a4'>(() => {
@@ -146,7 +130,6 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
   const activeSentenceRef = useRef<HTMLSpanElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // Keyboard shortcut: Escape exits Zen Mode
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && zenMode && onToggleZenMode) {
@@ -157,35 +140,27 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [zenMode, onToggleZenMode]);
 
-  // Auto-scroll to active sentence when it changes smoothly
   useEffect(() => {
     if (autoScroll && activeSentenceRef.current) {
-      activeSentenceRef.current.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      });
+      activeSentenceRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }, [currentSentenceIndex, currentPageIndex, autoScroll, pageViewMode]);
 
   if (!document) {
     return (
       <div className="flex-1 flex items-center justify-center p-6 text-center">
-        <div className="max-w-md w-full p-8 rounded-3xl border border-dashed border-slate-300 dark:border-slate-700 bg-white/50 dark:bg-slate-900/50 backdrop-blur-xs">
-          <div className="w-16 h-16 rounded-2xl bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto mb-4 shadow-xs">
-            <BookOpen className="w-8 h-8" />
-          </div>
-          <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-            ไม่มีหนังสือหรือเอกสารที่เปิดอยู่
-          </h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-2 mb-6">
-            เปิดไฟล์ PDF จากอุปกรณ์ของคุณ หรือเลือกบทความปรัชญา & C.G. Jung 1,000 หน้าเพื่อเริ่มอ่านทันที
+        <div className="max-w-sm w-full p-8 rounded-xl border border-[var(--line)] bg-[var(--surface)]">
+          <BookOpen className="w-6 h-6 text-[var(--ink-3)] mx-auto mb-4" />
+          <h2 className="text-base font-semibold">ไม่มีเอกสารที่เปิดอยู่</h2>
+          <p className="text-sm text-[var(--ink-2)] mt-1.5 mb-6">
+            เปิดไฟล์ PDF จากอุปกรณ์ของคุณ หรือเลือกจากคลังเพื่อเริ่มอ่าน
           </p>
           <button
             id="open-library-empty-btn"
             onClick={onOpenLibrary}
-            className="w-full py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm transition shadow-md active:scale-98"
+            className="w-full py-2.5 px-4 rounded-lg bg-[var(--ink)] text-[var(--paper)] font-medium text-sm transition hover:opacity-85 active:scale-[0.98] cursor-pointer"
           >
-            เปิดคลังเอกสาร (Document Library)
+            เปิดคลังเอกสาร
           </button>
         </div>
       </div>
@@ -195,7 +170,6 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
   const currentPage = document.pages[currentPageIndex] || document.pages[0];
   const totalPages = document.pages.length;
 
-  // Typography scale classes
   const fontSizes: Record<ReaderFontSize, { text: string; leading: string }> = {
     sm: { text: 'text-base', leading: 'leading-relaxed' },
     md: { text: 'text-lg', leading: 'leading-loose' },
@@ -223,100 +197,68 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
     full: 'max-w-full',
   };
 
-  // Theme styling classes
   const themeClasses: Record<
     ReaderTheme,
-    {
-      bg: string;
-      text: string;
-      cardBg: string;
-      highlight: string;
-      highlightBorder: string;
-      highlightBadge: string;
-      hoverBg: string;
-      secondaryText: string;
-      wordActiveSentenceBg: string;
-      activeWord: string;
-    }
+    { bg: string; text: string; card: string; secondary: string; hover: string; sentence: string; word: string }
   > = {
     light: {
-      bg: 'bg-[#f8f9fa]',
-      text: 'text-slate-800',
-      cardBg: 'bg-white shadow-xs border-slate-200/80',
-      highlight: 'bg-amber-100/80 text-slate-900 rounded-md shadow-2xs',
-      highlightBorder: 'border-b-2 border-amber-400/80',
-      highlightBadge: 'bg-blue-600 text-white',
-      hoverBg: 'hover:bg-slate-100/80',
-      secondaryText: 'text-slate-500',
-      wordActiveSentenceBg: 'bg-amber-500/10 text-slate-900 rounded-md border-b border-amber-400/50',
-      activeWord: 'bg-amber-300 text-slate-950 font-medium rounded-xs shadow-xs',
+      bg: 'bg-[var(--paper)]',
+      text: 'text-[var(--ink)]',
+      card: 'bg-[var(--surface)] border-[var(--line)]',
+      secondary: 'text-[var(--ink-2)]',
+      hover: 'hover:bg-[var(--surface-2)]',
+      sentence: 'bg-[#f5efdc]',
+      word: 'bg-[#e8c547] text-[#18181b]',
     },
     sepia: {
       bg: 'bg-[#f6efe2]',
       text: 'text-[#3d2f21]',
-      cardBg: 'bg-[#fffaf0] shadow-xs border-[#e6dbc8]',
-      highlight: 'bg-[#ebd8b5]/85 text-[#2c1d0f] rounded-md shadow-2xs',
-      highlightBorder: 'border-b-2 border-[#b88628]/70',
-      highlightBadge: 'bg-[#a37941] text-white',
-      hoverBg: 'hover:bg-[#f2e2c8]/60',
-      secondaryText: 'text-[#7a6449]',
-      wordActiveSentenceBg: 'bg-[#ebd8b5]/50 text-[#2c1d0f] rounded-md border-b border-[#c49a45]/40',
-      activeWord: 'bg-[#e5c07b] text-[#24170c] font-medium rounded-xs shadow-xs',
+      card: 'bg-[#fffaf0] border-[#e6dbc8]',
+      secondary: 'text-[#7a6449]',
+      hover: 'hover:bg-[#f2e2c8]',
+      sentence: 'bg-[#efe0c3]',
+      word: 'bg-[#ddb45e] text-[#24170c]',
     },
     dark: {
-      bg: 'bg-[#0b0f19]',
-      text: 'text-slate-200',
-      cardBg: 'bg-[#151c2c] shadow-xs border-slate-800/80',
-      highlight: 'bg-blue-500/15 text-slate-100 rounded-md shadow-2xs',
-      highlightBorder: 'border-b-2 border-blue-400/60',
-      highlightBadge: 'bg-blue-500 text-white',
-      hoverBg: 'hover:bg-slate-800/60',
-      secondaryText: 'text-slate-400',
-      wordActiveSentenceBg: 'bg-blue-500/10 text-slate-100 rounded-md border-b border-blue-400/40',
-      activeWord: 'bg-amber-400/95 text-slate-950 font-medium rounded-xs shadow-xs',
+      bg: 'bg-[var(--paper)]',
+      text: 'text-[var(--ink)]',
+      card: 'bg-[var(--surface)] border-[var(--line)]',
+      secondary: 'text-[var(--ink-2)]',
+      hover: 'hover:bg-[var(--surface-2)]',
+      sentence: 'bg-white/[0.07]',
+      word: 'bg-[#e8c547] text-[#18181b]',
     },
     oled: {
       bg: 'bg-black',
-      text: 'text-slate-200',
-      cardBg: 'bg-[#0a0a0a] shadow-none border-neutral-800/90',
-      highlight: 'bg-indigo-500/20 text-slate-100 rounded-md shadow-2xs',
-      highlightBorder: 'border-b-2 border-indigo-400/60',
-      highlightBadge: 'bg-purple-600 text-white',
-      hoverBg: 'hover:bg-neutral-900/60',
-      secondaryText: 'text-neutral-400',
-      wordActiveSentenceBg: 'bg-indigo-500/12 text-slate-100 rounded-md border-b border-indigo-400/40',
-      activeWord: 'bg-amber-400 text-black font-medium rounded-xs shadow-xs',
+      text: 'text-neutral-200',
+      card: 'bg-[#0a0a0a] border-neutral-800',
+      secondary: 'text-neutral-400',
+      hover: 'hover:bg-neutral-900',
+      sentence: 'bg-white/[0.08]',
+      word: 'bg-[#e8c547] text-black',
     },
     nord: {
       bg: 'bg-[#242933]',
       text: 'text-[#eceff4]',
-      cardBg: 'bg-[#2e3440] shadow-xs border-[#434c5e]',
-      highlight: 'bg-[#434c5e]/80 text-[#eceff4] rounded-md shadow-2xs',
-      highlightBorder: 'border-b-2 border-[#88c0d0]/70',
-      highlightBadge: 'bg-[#88c0d0] text-[#2e3440]',
-      hoverBg: 'hover:bg-[#3b4252]/60',
-      secondaryText: 'text-[#d8dee9]',
-      wordActiveSentenceBg: 'bg-[#434c5e]/50 text-[#eceff4] rounded-md border-b border-[#88c0d0]/40',
-      activeWord: 'bg-[#ebcb8b] text-[#2e3440] font-medium rounded-xs shadow-xs',
+      card: 'bg-[#2e3440] border-[#434c5e]',
+      secondary: 'text-[#b8c0cf]',
+      hover: 'hover:bg-[#3b4252]',
+      sentence: 'bg-white/[0.07]',
+      word: 'bg-[#ebcb8b] text-[#2e3440]',
     },
   };
 
   const currentTheme = themeClasses[theme];
   const currentFont = fontSizes[fontSize];
 
-  /**
-   * Render words inline with pure smooth flow.
-   * NO inline-block, NO scale transform, NO text jumping!
-   */
   const renderSentenceContent = (sentence: string, isActive: boolean, pageIdx: number, sentenceIdx: number) => {
-    // Check for Princeton Edition C.G. Jung paragraph marker like [1], [2], [145]
     const princetonMatch = sentence.match(/^\[(\d+)\]\s*(.*)$/);
     const paragraphBadge = princetonMatch ? (
       <span
-        className="font-mono text-xs font-bold text-amber-800 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/80 px-2 py-0.5 rounded-md mr-2 border border-amber-300/80 dark:border-amber-800/80 shadow-2xs select-none inline-block align-middle"
-        title={`Princeton Edition Paragraph ${princetonMatch[1]}`}
+        className="font-mono text-xs text-[var(--ink-3)] mr-2 select-none"
+        title={`Paragraph ${princetonMatch[1]}`}
       >
-        § [{princetonMatch[1]}]
+        [{princetonMatch[1]}]
       </span>
     ) : null;
 
@@ -336,9 +278,7 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
 
     let activeTokenIdx = -1;
     if (isPlaying) {
-      activeTokenIdx = tokens.findIndex(
-        (t) => t.isWord && charIdx >= t.start && charIdx < t.end
-      );
+      activeTokenIdx = tokens.findIndex((t) => t.isWord && charIdx >= t.start && charIdx < t.end);
       if (activeTokenIdx === -1) {
         activeTokenIdx = tokens.findIndex((t) => t.isWord && t.start >= charIdx);
       }
@@ -354,10 +294,7 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
           if (!token.isWord) {
             return <span key={tIdx}>{token.text}</span>;
           }
-
           const isCurrentWord = isPlaying && tIdx === activeTokenIdx;
-          const isPastWord = isPlaying && activeTokenIdx !== -1 && tIdx < activeTokenIdx;
-
           return (
             <span
               key={tIdx}
@@ -366,14 +303,10 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
                 e.stopPropagation();
                 onInspectWord?.(token.text, sentence);
               }}
-              className={`inline px-1 py-0.5 rounded-sm reader-word-highlight cursor-pointer ${
-                isCurrentWord
-                  ? currentTheme.activeWord
-                  : isPastWord
-                  ? 'text-inherit opacity-90'
-                  : 'hover:bg-amber-400/15 dark:hover:bg-blue-400/15'
+              className={`rounded-sm reader-word-highlight cursor-pointer ${
+                isCurrentWord ? currentTheme.word : 'hover:underline underline-offset-4'
               }`}
-              title="คลิกเพื่อดู IPA, การออกเสียง และความหมาย"
+              title="ดูการออกเสียงและความหมาย"
             >
               {token.text}
             </span>
@@ -383,66 +316,55 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
     );
   };
 
-  // Determine which pages to render based on pageViewMode
-  // In 'continuous' mode, render a fluid scroll of all pages or a window around current page
   const pagesToRender =
     pageViewMode === 'continuous'
-      ? document.pages.slice(
-          Math.max(0, currentPageIndex - 3),
-          Math.min(totalPages, currentPageIndex + 7)
-        )
+      ? document.pages.slice(Math.max(0, currentPageIndex - 3), Math.min(totalPages, currentPageIndex + 7))
       : [currentPage];
+
+  const toolBtn =
+    'p-1.5 rounded-md text-[var(--ink-2)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)] text-xs font-medium transition flex items-center gap-1 cursor-pointer';
 
   return (
     <div
       ref={containerRef}
       id="document-reader-container"
-      className={`flex-1 overflow-y-auto pb-36 pt-3 sm:pt-4 px-3 sm:px-6 transition-colors duration-200 ${currentTheme.bg}`}
+      className={`flex-1 overflow-y-auto pb-36 pt-4 px-4 sm:px-6 ${currentTheme.bg}`}
     >
-      <div className="max-w-4xl mx-auto space-y-3 sm:space-y-4">
-        {/* Subtle Document Utility Bar (Quiet, clean, uncluttered) */}
-        <div className="flex items-center justify-between gap-2.5 py-1.5 px-3 rounded-xl bg-white/70 dark:bg-slate-900/70 border border-slate-200/80 dark:border-slate-800/80 backdrop-blur-xs text-xs flex-wrap">
-          {/* LEFT: Chapter Selector & Document Meta */}
+      <div className="max-w-4xl mx-auto">
+        <div className="flex items-center justify-between gap-2 pb-3 mb-5 border-b border-[var(--line)] text-[13px] flex-wrap">
           <div className="flex items-center gap-2 min-w-0">
             {document.chapters && document.chapters.length > 0 ? (
               <select
                 id="chapter-jump-select"
-                value={
-                  document.chapters.reduce((bestIdx, chap, idx) => {
-                    return currentPageIndex >= chap.pageIndex ? idx : bestIdx;
-                  }, 0)
-                }
+                value={document.chapters.reduce((bestIdx, chap, idx) => {
+                  return currentPageIndex >= chap.pageIndex ? idx : bestIdx;
+                }, 0)}
                 onChange={(e) => {
-                  const chapIndex = parseInt(e.target.value, 10);
-                  const targetChap = document.chapters?.[chapIndex];
-                  if (targetChap) {
-                    onChangePage(targetChap.pageIndex);
-                  }
+                  const targetChap = document.chapters?.[parseInt(e.target.value, 10)];
+                  if (targetChap) onChangePage(targetChap.pageIndex);
                 }}
-                className={`px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 cursor-pointer focus:outline-none max-w-[150px] sm:max-w-[220px] truncate ${currentTheme.text}`}
-                title="Chapter Navigation"
+                className="px-2 py-1 text-[13px] rounded-md bg-transparent border border-[var(--line)] cursor-pointer focus:outline-none max-w-[220px] truncate"
+                title="Chapter"
               >
                 {document.chapters.map((chap, idx) => (
-                  <option key={idx} value={idx} className="text-slate-900 bg-white dark:bg-slate-800 dark:text-white">
+                  <option key={idx} value={idx}>
                     {chap.author ? `${(chap.author || '').split(' ').slice(-1)[0]}: ` : ''}{chap.title} (p.{chap.pageIndex + 1})
                   </option>
                 ))}
               </select>
             ) : (
-              <div className="flex items-center gap-1.5 font-medium text-slate-600 dark:text-slate-400">
-                <FileText className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                <span className="truncate max-w-[140px] sm:max-w-[200px] font-semibold">{document.name}</span>
-              </div>
+              <span className="flex items-center gap-1.5 text-[var(--ink-2)]">
+                <FileText className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate max-w-[200px] font-medium">{document.name}</span>
+              </span>
             )}
-
-            {/* Scanned page indicator & quick OCR if needed */}
             {currentPage && isScannedPage(currentPage) && onOpenOCR && (
               <button
                 id="open-ocr-btn"
                 type="button"
                 onClick={onOpenOCR}
-                className="px-2 py-0.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] flex items-center gap-1 transition shadow-2xs animate-pulse cursor-pointer shrink-0"
-                title="Perform OCR on scanned page"
+                className="px-2 py-0.5 rounded-md border border-[var(--line)] text-xs text-[var(--ink-2)] hover:text-[var(--ink)] transition flex items-center gap-1 cursor-pointer shrink-0"
+                title="OCR หน้านี้"
               >
                 <ScanText className="w-3 h-3" />
                 <span>OCR</span>
@@ -450,111 +372,61 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
             )}
           </div>
 
-          {/* RIGHT: Layout & Reading Utilities */}
-          <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 flex-wrap">
-            {/* Concept Memory */}
+          <div className="flex items-center gap-0.5 shrink-0 flex-wrap">
             {onOpenConceptMemory && (
-              <button
-                id="open-concept-memory-btn"
-                onClick={onOpenConceptMemory}
-                className="p-1.5 sm:px-2.5 sm:py-1 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium transition border border-transparent hover:border-slate-200/80 dark:hover:border-slate-700 flex items-center gap-1 cursor-pointer"
-                title="Concept Memory Bank"
-              >
-                <Bookmark className="w-3.5 h-3.5 text-amber-500" />
+              <button id="open-concept-memory-btn" onClick={onOpenConceptMemory} className={toolBtn} title="Concept memory">
+                <Bookmark className="w-3.5 h-3.5" />
                 <span className="hidden md:inline">Concepts</span>
               </button>
             )}
-
-            {/* Deep Listening Mode */}
             {onOpenDeepListening && (
-              <button
-                id="open-deep-listening-btn"
-                onClick={onOpenDeepListening}
-                className="p-1.5 sm:px-2.5 sm:py-1 rounded-lg text-purple-700 dark:text-purple-300 bg-purple-50/80 dark:bg-purple-950/40 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-xs font-semibold transition border border-purple-200/60 dark:border-purple-800/60 flex items-center gap-1 cursor-pointer"
-                title="Distraction-Free Deep Listening Mode"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-purple-500" />
-                <span className="hidden sm:inline">Deep Mode</span>
+              <button id="open-deep-listening-btn" onClick={onOpenDeepListening} className={toolBtn} title="Deep listening">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Deep</span>
               </button>
             )}
-
-            {/* Pronunciation & IPA Assistant */}
             {onOpenPronunciationModal && (
-              <button
-                id="open-pronunciation-btn"
-                onClick={onOpenPronunciationModal}
-                className="p-1.5 sm:px-2 sm:py-1 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium transition border border-transparent hover:border-slate-200 dark:hover:border-slate-700 flex items-center gap-1 cursor-pointer"
-                title="Pronunciation & IPA Assistant"
-              >
-                <Zap className="w-3.5 h-3.5 text-amber-500" />
+              <button id="open-pronunciation-btn" onClick={onOpenPronunciationModal} className={toolBtn} title="Pronunciation">
+                <Zap className="w-3.5 h-3.5" />
                 <span className="hidden lg:inline">IPA</span>
               </button>
             )}
-
-            {/* Content Language Switcher */}
             {onOpenLanguageSwitcher && (
-              <button
-                id="open-language-switcher-btn"
-                onClick={onOpenLanguageSwitcher}
-                className="p-1.5 sm:px-2 sm:py-1 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium transition border border-transparent hover:border-slate-200 dark:hover:border-slate-700 flex items-center gap-1 cursor-pointer"
-                title="Content Language & Voice"
-              >
-                <Globe className="w-3.5 h-3.5 text-blue-500" />
-                <span className="hidden xl:inline">{((document.detectedLanguage || 'EN').split('-')[0] || 'EN').toUpperCase()}</span>
+              <button id="open-language-switcher-btn" onClick={onOpenLanguageSwitcher} className={toolBtn} title="Language">
+                <Globe className="w-3.5 h-3.5" />
+                <span className="hidden xl:inline font-mono">
+                  {((document.detectedLanguage || 'EN').split('-')[0] || 'EN').toUpperCase()}
+                </span>
               </button>
             )}
-
-            <div className="h-3.5 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
-
-            {/* Continuous vs Single Page Mode */}
             <button
               id="toggle-page-view-mode-btn"
               onClick={onTogglePageViewMode}
-              className={`p-1.5 sm:px-2 sm:py-1 rounded-lg text-xs font-medium transition cursor-pointer flex items-center gap-1 border ${
-                pageViewMode === 'continuous'
-                  ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400'
-                  : 'bg-transparent border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-              }`}
-              title={pageViewMode === 'continuous' ? 'Continuous Scroll Mode' : 'Single Page Mode'}
+              className={toolBtn}
+              title={pageViewMode === 'continuous' ? 'Continuous scroll' : 'Single page'}
             >
               <Layers className="w-3.5 h-3.5" />
               <span className="hidden md:inline">{pageViewMode === 'continuous' ? 'Continuous' : 'Single'}</span>
             </button>
-
-            {/* Word vs Sentence Highlight */}
             {onToggleHighlightMode && (
               <button
                 id="toggle-highlight-mode-btn"
                 onClick={onToggleHighlightMode}
-                className="p-1.5 sm:px-2 sm:py-1 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer flex items-center gap-1"
-                title="Toggle Word or Sentence Highlight"
+                className={toolBtn}
+                title="Word / sentence highlight"
               >
-                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                <span className="hidden md:inline">{highlightMode === 'word' ? 'Word' : 'Sentence'}</span>
+                <span className="hidden md:inline font-mono text-[11px]">{highlightMode === 'word' ? 'Word' : 'Sent'}</span>
               </button>
             )}
-
-            {/* Page fit / A4 height toggle */}
-            <button
-              type="button"
-              onClick={togglePageHeightMode}
-              className={`p-1.5 sm:px-2 sm:py-1 rounded-lg text-xs font-medium transition cursor-pointer flex items-center gap-1 ${
-                pageHeightMode === 'fit'
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-slate-500 dark:text-slate-400'
-              }`}
-              title="Toggle Fit Height vs A4 Sheet Height"
-            >
+            <button type="button" onClick={togglePageHeightMode} className={toolBtn} title="Fit / A4 height">
               <Maximize2 className="w-3.5 h-3.5" />
-              <span className="hidden lg:inline">{pageHeightMode === 'fit' ? 'Fit' : 'A4'}</span>
+              <span className="hidden lg:inline font-mono text-[11px]">{pageHeightMode === 'fit' ? 'Fit' : 'A4'}</span>
             </button>
-
-            {/* Delete Book Button */}
             {onDeleteDocument && (
               <button
                 type="button"
                 onClick={() => setShowDeleteConfirm(true)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer shrink-0"
+                className="p-1.5 rounded-md text-[var(--ink-3)] hover:text-[var(--danger)] transition cursor-pointer shrink-0"
                 title="Delete document"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -563,65 +435,55 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
           </div>
         </div>
 
-        {/* Reading Canvas Pages */}
-        <div className="space-y-6">
+        <div className="space-y-8">
           {pagesToRender.map((page) => {
             const isActualCurrentPage = page.pageNumber - 1 === currentPageIndex;
             const actualPageIdx = page.pageNumber - 1;
 
             return (
-              <div
+              <article
                 key={page.pageNumber}
                 id={`reader-page-${page.pageNumber}`}
                 className={`mx-auto w-full ${lineWidths[lineWidth]} ${
-                  pageHeightMode === 'fit' ? 'min-h-0 sm:min-h-[280px]' : 'min-h-[297mm]'
-                } ${
-                  pageHeightMode === 'fit' ? 'p-5 sm:p-8 md:p-10' : 'p-6 sm:p-12 md:p-16'
-                } rounded-xl sm:rounded-2xl border transition-all duration-200 relative flex flex-col justify-between shadow-xl sm:shadow-2xl ${currentTheme.cardBg} ${
+                  pageHeightMode === 'fit' ? '' : 'min-h-[250mm]'
+                } px-1 sm:px-2 py-2 rounded-xl border transition-colors ${
                   isActualCurrentPage && pageViewMode === 'continuous'
-                    ? 'ring-2 ring-blue-500/50 shadow-2xl border-blue-400 dark:border-blue-600'
-                    : 'border-slate-200/90 dark:border-slate-800/80'
-                }`}
+                    ? 'border-[var(--ink-3)]'
+                    : `${currentTheme.card}`
+                } ${pageViewMode === 'continuous' ? 'px-4 sm:px-6 py-6' : 'border-transparent'}`}
               >
-                {/* Chapter & Page Header */}
-                <div className="mb-6 pb-4 border-b border-slate-200/60 dark:border-slate-800/60 flex items-center justify-between flex-wrap gap-2">
-                  <span className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-                    {page.chapterTitle || `หน้า ${page.pageNumber}`}
+                <div className="mb-5 flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium uppercase tracking-widest text-[var(--ink-3)]">
+                    {page.chapterTitle || `Page ${page.pageNumber}`}
                   </span>
-
                   <div className="flex items-center gap-3">
-                    <span className="text-xs text-slate-400">
-                      หน้า {page.pageNumber} จาก {totalPages}
+                    <span className="text-xs font-mono text-[var(--ink-3)]">
+                      {page.pageNumber}/{totalPages}
                     </span>
-
                     {onToggleBookmark && isActualCurrentPage && (
                       <button
                         id="toggle-bookmark-btn"
                         type="button"
                         onClick={onToggleBookmark}
-                        className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-2xs ${
-                          isCurrentPageBookmarked
-                            ? 'bg-amber-500 text-white hover:bg-amber-600'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-amber-100 hover:text-amber-800 dark:hover:bg-amber-950/60'
+                        className={`text-xs flex items-center gap-1 transition cursor-pointer ${
+                          isCurrentPageBookmarked ? 'text-[var(--ink)] font-semibold' : 'text-[var(--ink-3)] hover:text-[var(--ink)]'
                         }`}
-                        title={isCurrentPageBookmarked ? 'ลบบุ๊กมาร์กหน้านี้' : 'บุ๊กมาร์กหน้านี้ (Save Page Bookmark)'}
+                        title={isCurrentPageBookmarked ? 'Remove bookmark' : 'Bookmark this page'}
                       >
-                        <Bookmark className={`w-3.5 h-3.5 ${isCurrentPageBookmarked ? 'fill-current text-white' : 'text-amber-500'}`} />
-                        <span>{isCurrentPageBookmarked ? 'บันทึกแล้ว' : 'บุ๊กมาร์กหน้า'}</span>
+                        <Bookmark className={`w-3.5 h-3.5 ${isCurrentPageBookmarked ? 'fill-current' : ''}`} />
+                        <span>{isCurrentPageBookmarked ? 'Saved' : 'Save'}</span>
                       </button>
                     )}
                   </div>
                 </div>
 
-                {/* Sentences structured Paragraph by Paragraph */}
-                <div className={`space-y-5 ${fontFamilies[fontFamily]} ${currentFont.text} ${lineHeights[lineHeight]} ${currentTheme.text}`}>
+                <div className={`${fontFamilies[fontFamily]} ${currentFont.text} ${lineHeights[lineHeight]} ${currentTheme.text}`}>
                   {page.sentences.length > 0 ? (
                     (() => {
-                      // Group sentences strictly respecting original page.paragraphs and bracket markers [1], [2], [145], [§12]
                       const paragraphGroups: { sentenceIdx: number; sentence: string }[][] = [];
                       let currentGroup: { sentenceIdx: number; sentence: string }[] = [];
 
-                      const hasBracketMarkers = page.sentences.some(s => /^\s*\[§?\d+\]/.test(s) || /\[§?\d+\]/.test(s));
+                      const hasBracketMarkers = page.sentences.some((s) => /^\s*\[§?\d+\]/.test(s) || /\[§?\d+\]/.test(s));
 
                       if (hasBracketMarkers) {
                         page.sentences.forEach((sentence, sIdx) => {
@@ -632,30 +494,20 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
                           }
                           currentGroup.push({ sentenceIdx: sIdx, sentence });
                         });
-                        if (currentGroup.length > 0) {
-                          paragraphGroups.push(currentGroup);
-                        }
+                        if (currentGroup.length > 0) paragraphGroups.push(currentGroup);
                       } else if (page.paragraphs && page.paragraphs.length > 0) {
-                        // Align sentences with original source paragraphs extracted from PDF
                         let pIndex = 0;
                         page.sentences.forEach((sentence, sIdx) => {
                           currentGroup.push({ sentenceIdx: sIdx, sentence });
-                          const currentGroupText = currentGroup.map(g => g.sentence).join(' ');
+                          const currentGroupText = currentGroup.map((g) => g.sentence).join(' ');
                           const targetPara = page.paragraphs[pIndex] || '';
-
-                          if (
-                            pIndex < page.paragraphs.length - 1 &&
-                            targetPara.length > 0 &&
-                            currentGroupText.length >= targetPara.length - 10
-                          ) {
+                          if (pIndex < page.paragraphs.length - 1 && targetPara.length > 0 && currentGroupText.length >= targetPara.length - 10) {
                             paragraphGroups.push(currentGroup);
                             currentGroup = [];
                             pIndex++;
                           }
                         });
-                        if (currentGroup.length > 0) {
-                          paragraphGroups.push(currentGroup);
-                        }
+                        if (currentGroup.length > 0) paragraphGroups.push(currentGroup);
                       } else {
                         page.sentences.forEach((sentence, sIdx) => {
                           currentGroup.push({ sentenceIdx: sIdx, sentence });
@@ -664,36 +516,34 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
                             currentGroup = [];
                           }
                         });
-                        if (currentGroup.length > 0) {
-                          paragraphGroups.push(currentGroup);
-                        }
+                        if (currentGroup.length > 0) paragraphGroups.push(currentGroup);
                       }
 
                       const indentClasses: Record<ParagraphIndent, string> = {
-                        none: 'indent-0',
-                        standard: 'indent-8 sm:indent-12 [text-indent:2.2em]',
-                        deep: 'indent-12 sm:indent-16 [text-indent:3.8em]',
+                        none: '',
+                        standard: 'indent-8',
+                        deep: 'indent-12',
                       };
 
                       return paragraphGroups.map((group, pIdx) => {
                         const firstSentenceText = group[0]?.sentence ? group[0].sentence.trim() : '';
-                        const isBlockQuote = /^["'«“]/.test(firstSentenceText) && group.length >= 1;
+                        const isBlockQuote = /^["'«“]/.test(firstSentenceText);
 
                         return (
                           <p
                             key={pIdx}
-                            className={`text-justify leading-relaxed sm:leading-loose my-4 tracking-normal transition-all ${
+                            className={`text-justify my-5 ${
                               isBlockQuote
-                                ? 'border-l-3 border-amber-400 dark:border-amber-600 pl-4 sm:pl-6 my-5 italic bg-amber-500/5 py-2.5 rounded-r-2xl indent-0'
-                                : indentClasses[paragraphIndent]
+                                ? 'border-l-2 border-[var(--line)] pl-5 italic indent-0'
+                                : pIdx === 0
+                                  ? 'indent-0'
+                                  : indentClasses[paragraphIndent]
                             }`}
                           >
                             {group.map(({ sentence, sentenceIdx: sIdx }) => {
-                              const isSentenceActive =
-                                isActualCurrentPage && sIdx === currentSentenceIndex;
+                              const isSentenceActive = isActualCurrentPage && sIdx === currentSentenceIndex;
                               const isWordActive = isSentenceActive && highlightMode === 'word';
-                              const isSentenceHighlightActive =
-                                isSentenceActive && highlightMode === 'sentence';
+                              const isSentenceHighlightActive = isSentenceActive && highlightMode === 'sentence';
 
                               return (
                                 <span
@@ -701,26 +551,12 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
                                   ref={isSentenceActive ? activeSentenceRef : null}
                                   id={`sentence-${actualPageIdx}-${sIdx}`}
                                   onClick={() => onSelectSentence(sIdx, actualPageIdx)}
-                                  className={`inline cursor-pointer rounded-md mx-0.5 reader-sentence-highlight ${
-                                    isWordActive
-                                      ? `${currentTheme.wordActiveSentenceBg} px-1.5 py-0.5`
-                                      : isSentenceHighlightActive
-                                      ? `${currentTheme.highlight} ${currentTheme.highlightBorder} px-1.5 py-0.5`
-                                      : `${currentTheme.hoverBg} px-1 py-0.5`
+                                  className={`cursor-pointer rounded reader-sentence-highlight ${
+                                    isWordActive || isSentenceHighlightActive ? `${currentTheme.sentence} px-1` : ''
                                   }`}
-                                  title="คลิกเพื่อเริ่มอ่านจากประโยคนี้"
+                                  title="อ่านจากประโยคนี้"
                                 >
-                                  {isSentenceActive && isPlaying && (
-                                    <span className="inline-flex items-center align-middle mr-1 -mt-0.5 opacity-80">
-                                      <Volume2 className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 animate-pulse" />
-                                    </span>
-                                  )}
-                                  {renderSentenceContent(
-                                    sentence,
-                                    isSentenceActive,
-                                    actualPageIdx,
-                                    sIdx
-                                  )}{' '}
+                                  {renderSentenceContent(sentence, isSentenceActive, actualPageIdx, sIdx)}{' '}
                                 </span>
                               );
                             })}
@@ -729,151 +565,94 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
                       });
                     })()
                   ) : (
-                    <div className="text-center py-10 text-slate-400 text-sm">
-                      หน้านี้ไม่มีข้อความ หรือเป็นภาพประกอบ
-                    </div>
+                    <div className="text-center py-10 text-[var(--ink-3)] text-sm">หน้านี้ไม่มีข้อความ</div>
                   )}
                 </div>
-              </div>
+              </article>
             );
           })}
         </div>
 
-        {/* Page Bottom Navigation Hint */}
-        <div className="pt-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 px-2 flex-wrap gap-2">
-          <span>💡 คลิกที่คำหรือประโยคเพื่อฟังเสียง และคลิกคำเพื่อดู IPA & ความหมาย</span>
-          <div className="flex items-center gap-3">
+        <div className="pt-6 flex items-center justify-between text-[13px] text-[var(--ink-3)]">
+          <span>คลิกประโยคเพื่อเริ่มฟังจากตรงนั้น · คลิกคำเพื่อดูความหมาย</span>
+          <div className="flex items-center gap-4">
             {currentPageIndex > 0 && (
-              <button
-                id="prev-page-link"
-                onClick={() => onChangePage(currentPageIndex - 1)}
-                className="hover:text-blue-600 font-medium cursor-pointer"
-              >
-                ← หน้าก่อนหน้า
+              <button id="prev-page-link" onClick={() => onChangePage(currentPageIndex - 1)} className="hover:text-[var(--ink)] cursor-pointer">
+                ← Prev
               </button>
             )}
             {currentPageIndex < totalPages - 1 && (
-              <button
-                id="next-page-link"
-                onClick={() => onChangePage(currentPageIndex + 1)}
-                className="hover:text-blue-600 font-medium cursor-pointer"
-              >
-                หน้าถัดไป →
+              <button id="next-page-link" onClick={() => onChangePage(currentPageIndex + 1)} className="hover:text-[var(--ink)] cursor-pointer">
+                Next →
               </button>
             )}
           </div>
         </div>
-        {/* Floating Zen Bar when in Zen Mode */}
+
         {zenMode && (
-          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 p-2 px-4 rounded-2xl bg-slate-900/90 backdrop-blur-md text-white border border-slate-700/80 shadow-2xl animate-in slide-in-from-bottom duration-300">
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 p-1.5 rounded-full bg-[var(--surface)] border border-[var(--line)] shadow-xl">
             {onTogglePlay && (
               <button
                 type="button"
                 onClick={onTogglePlay}
-                className="p-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold transition shadow-md active:scale-95"
-                title={isPlaying ? 'หยุดการอ่านเสียง' : 'เล่นเสียงอ่าน'}
+                className="w-9 h-9 rounded-full bg-[var(--ink)] text-[var(--paper)] flex items-center justify-center transition hover:opacity-85 cursor-pointer"
+                title={isPlaying ? 'Pause' : 'Play'}
               >
                 {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
               </button>
             )}
-
-            <div className="h-4 w-px bg-slate-700" />
-
             <button
               type="button"
               onClick={() => onChangePage(Math.max(0, currentPageIndex - 1))}
               disabled={currentPageIndex <= 0}
-              className="p-1.5 rounded-lg text-slate-300 hover:bg-slate-800 disabled:opacity-30 transition"
-              title="หน้าก่อนหน้า"
+              className="p-2 rounded-full text-[var(--ink-2)] hover:bg-[var(--surface-2)] disabled:opacity-30 transition cursor-pointer"
+              title="Previous page"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-
             <button
               type="button"
               onClick={onOpenPageSelector}
-              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono font-bold text-blue-300 transition"
-              title="คลิกเพื่อเลือกหน้า"
+              className="px-2 text-xs font-mono text-[var(--ink-2)] hover:text-[var(--ink)] transition cursor-pointer"
+              title="Pages"
             >
-              น. {currentPageIndex + 1} / {totalPages}
+              {currentPageIndex + 1}/{totalPages}
             </button>
-
             <button
               type="button"
               onClick={() => onChangePage(Math.min(totalPages - 1, currentPageIndex + 1))}
               disabled={currentPageIndex >= totalPages - 1}
-              className="p-1.5 rounded-lg text-slate-300 hover:bg-slate-800 disabled:opacity-30 transition"
-              title="หน้าถัดไป"
+              className="p-2 rounded-full text-[var(--ink-2)] hover:bg-[var(--surface-2)] disabled:opacity-30 transition cursor-pointer"
+              title="Next page"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
-
-            <div className="h-4 w-px bg-slate-700" />
-
-            {onOpenStyleModal && (
-              <button
-                type="button"
-                onClick={onOpenStyleModal}
-                className="p-1.5 rounded-lg text-slate-300 hover:bg-slate-800 transition"
-                title="ปรับแต่งรูปแบบตัวอักษรและธีม"
-              >
-                <Sliders className="w-4 h-4 text-blue-400" />
-              </button>
-            )}
-
-            {onOpenPageNotes && (
-              <button
-                type="button"
-                onClick={onOpenPageNotes}
-                className="p-1.5 rounded-lg text-slate-300 hover:bg-slate-800 transition"
-                title="เปิดบันทึกย่อ"
-              >
-                <Bookmark className="w-4 h-4 text-amber-400" />
-              </button>
-            )}
-
-            <div className="h-4 w-px bg-slate-700" />
-
             {onToggleZenMode && (
               <button
                 type="button"
                 onClick={onToggleZenMode}
-                className="px-3 py-1 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition flex items-center gap-1 active:scale-95"
-                title="ออกจาก Zen Mode (หรือกด Esc)"
+                className="p-2 rounded-full text-[var(--ink-2)] hover:bg-[var(--surface-2)] transition cursor-pointer"
+                title="Exit zen (Esc)"
               >
-                <Minimize2 className="w-3.5 h-3.5" />
-                <span>Exit Zen (Esc)</span>
+                <Minimize2 className="w-4 h-4" />
               </button>
             )}
           </div>
         )}
       </div>
 
-      {/* Confirmation Modal: Delete Current Active Document */}
       {showDeleteConfirm && document && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-          <div className="w-full max-w-md p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl text-center space-y-4">
-            <div className="w-14 h-14 rounded-2xl bg-rose-100 dark:bg-rose-950/80 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto shadow-xs">
-              <Trash2 className="w-7 h-7" />
-            </div>
-
-            <div className="space-y-1.5">
-              <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                ยืนยันการลบหนังสือเล่มนี้?
-              </h3>
-              <p className="text-sm font-bold text-blue-600 dark:text-blue-400 max-w-xs mx-auto truncate">
-                "{document.name}"
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed pt-1">
-                เอกสารจำนวน {document.pageCount} หน้า พร้อมบุ๊กมาร์กและประวัติการอ่านของเล่มนี้จะถูกลบออกจากเครื่องทันที
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2 pt-2">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-sm p-6 rounded-xl bg-[var(--surface)] border border-[var(--line)] shadow-xl">
+            <h3 className="text-[15px] font-semibold">ลบ “{document.name}”?</h3>
+            <p className="text-[13px] text-[var(--ink-2)] mt-1.5">
+              {document.pageCount} หน้า พร้อมบุ๊กมาร์กและประวัติการอ่านจะหายไปจากเครื่อง
+            </p>
+            <div className="flex gap-2 mt-5">
               <button
                 type="button"
                 onClick={() => setShowDeleteConfirm(false)}
-                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs hover:bg-slate-200 transition cursor-pointer"
+                className="flex-1 py-2 rounded-lg border border-[var(--line)] text-sm font-medium hover:bg-[var(--surface-2)] transition cursor-pointer"
               >
                 ยกเลิก
               </button>
@@ -883,10 +662,9 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
                   setShowDeleteConfirm(false);
                   if (onDeleteDocument) onDeleteDocument(document.id);
                 }}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs transition shadow-md cursor-pointer flex items-center justify-center gap-1.5"
+                className="flex-1 py-2 rounded-lg bg-[var(--danger)] text-white text-sm font-medium hover:opacity-90 transition cursor-pointer"
               >
-                <Trash2 className="w-4 h-4" />
-                <span>ยืนยันลบเล่มนี้</span>
+                ลบ
               </button>
             </div>
           </div>

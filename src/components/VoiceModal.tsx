@@ -49,6 +49,7 @@ interface VoiceModalProps {
   onSelectAmbience?: (ambience: AmbienceSoundscape) => void;
   documentSentences?: string[];
   documentName?: string;
+  cloudAvailable?: boolean;
 }
 
 export const VoiceModal: React.FC<VoiceModalProps> = ({
@@ -68,13 +69,14 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   onSelectAmbience,
   documentSentences = [],
   documentName,
+  cloudAvailable = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLangCategory, setSelectedLangCategory] = useState<string>('all');
   const [onlyOffline, setOnlyOffline] = useState(false);
   const [onlyNatural, setOnlyNatural] = useState(false);
   const [onlyUSMale, setOnlyUSMale] = useState(false);
-  const [activeTab, setActiveTab] = useState<'pro-library' | 'voices' | 'profiles' | 'cadence' | 'equalizer' | 'ambience'>('pro-library');
+  const [activeTab, setActiveTab] = useState<'pro-library' | 'voices' | 'profiles' | 'cadence' | 'equalizer' | 'ambience'>(cloudAvailable ? 'pro-library' : 'voices');
   const [appliedPresetToast, setAppliedPresetToast] = useState<string | null>(null);
   const [previewingURI, setPreviewingURI] = useState<string | null>(null);
 
@@ -157,7 +159,22 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
     }
   };
 
+  const handleSelectVoice = (v: TTSVoiceInfo) => {
+    if (v.isBuiltInStudioVoice && !cloudAvailable) {
+      setAppliedPresetToast('เสียง Cloud ต้องใส่ GEMINI_API_KEY ใน .env ก่อน — ตอนนี้ใช้เสียงเครื่องไปก่อน');
+      setTimeout(() => setAppliedPresetToast(null), 4000);
+      return;
+    }
+    onSelectVoice(v);
+  };
+
   const handlePreviewVoice = (v: TTSVoiceInfo) => {
+    // Cloud voices need a backend key — fail loudly instead of silently
+    if (v.isBuiltInStudioVoice && !cloudAvailable) {
+      setAppliedPresetToast('เสียง Cloud ต้องใส่ GEMINI_API_KEY ใน .env ก่อน (เสียงเครื่องใช้ได้เลย)');
+      setTimeout(() => setAppliedPresetToast(null), 4000);
+      return;
+    }
     // Isolate audition tuning: restore main playback rate/pitch after preview
     const mainRate = ttsEngine.getRate();
     const mainPitch = ttsEngine.getPitch();
@@ -329,12 +346,12 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
           return (
             <div
               key={v.voice.voiceURI}
-              onClick={() => onSelectVoice(v)}
+              onClick={() => handleSelectVoice(v)}
               className={`p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
                 isSelected
                   ? 'bg-slate-900/90 border-indigo-500/60 ring-1 ring-indigo-500/40 shadow-xs'
                   : 'bg-slate-900/30 hover:bg-slate-900/60 border-slate-800/80 hover:border-slate-700/80'
-              }`}
+              } ${v.isBuiltInStudioVoice && !cloudAvailable ? 'opacity-60' : ''}`}
             >
               <div>
                 <div className="flex items-start justify-between gap-2 mb-1.5">
@@ -381,7 +398,7 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => onSelectVoice(v)}
+                  onClick={() => handleSelectVoice(v)}
                   className={`px-3 py-1 text-xs font-medium rounded-lg transition cursor-pointer ${
                     isSelected
                       ? 'bg-indigo-600 text-white font-semibold'
@@ -569,6 +586,7 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
             }}
             documentSentences={documentSentences}
             documentName={documentName}
+            cloudAvailable={cloudAvailable}
           />
         )}
 

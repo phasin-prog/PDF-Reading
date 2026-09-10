@@ -298,6 +298,25 @@ export class TTSEngine {
   private callbacks: TTSPlaybackCallbacks = {};
   private wordTimer: ReturnType<typeof setTimeout> | null = null;
   private hasReceivedNativeBoundary = false;
+  /** Document language used to pick a local fallback voice when the selected voice is cloud. */
+  private targetLang = 'en-US';
+
+  /**
+   * Generation token — bumped on every stop/seek/restart. All async continuations
+   * (fetch, audio events, pause timers, utterance events) capture the token and
+   * no-op when stale, so Stop is instant and taps never double-speak.
+   */
+  private generation = 0;
+
+  /** Local voice pack: prebuilt per-sentence word ranges + weights for instant seek & highlight. */
+  private pack: Array<{ ranges: { charIndex: number; charLength: number; word: string }[]; totalWeight: number }> = [];
+  private interpTimer: ReturnType<typeof setInterval> | null = null;
+  private interpBaseIdx = 0;
+  private interpBaseAt = 0; // performance.now() at base index
+
+  public setTargetLang(lang: string) {
+    if (lang) this.targetLang = lang;
+  }
 
   // Pro Podcast mastering chain (WebAudio) — applied to real TTS <audio>
   private masteringCtx: AudioContext | null = null;
@@ -540,6 +559,108 @@ export class TTSEngine {
     return this.getBestVoiceForLanguage('en-US');
   }
 
+  // ---- Zero-API local-first mode ----
+  private cloudAvailable = false;
+
+  /** Set from /api/health at startup. Cloud voices are only offered when true. */
+  public setCloudAvailable(available: boolean) {
+    this.cloudAvailable = available;
+  }
+
+  public isCloudAvailable(): boolean {
+    return this.cloudAvailable;
+  }
+
+  public static isCloudVoiceURI(uri: string | null | undefined): boolean {
+    return !!uri && uri.startsWith('builtin-cloud-');
+  }
+
+  /**
+   * Best ON-DEVICE voice for a language. Never returns a cloud voice, so it
+   * always works with zero API key and fully offline. Prefers local +
+   * high-quality (natural/enhanced) voices.
+   */
+  public getBestLocalVoiceForLanguage(langCode: string): SpeechSynthesisVoice | null {
+    const all = this.getVoices().filter((v) => !v.isBuiltInStudioVoice);
+    if (all.length === 0) return null;
+
+    const normalizedTarget = (langCode || 'en-US').toLowerCase().replace('_', '-');
+    const primaryTarget = normalizedTarget.split('-')[0];
+
+    const byQuality = (list: TTSVoiceInfo[]) =>
+      [...list].sort((a, b) =>
+        Number(b.isLocal) - Number(a.isLocal) || b.qualityScore - a.qualityScore
+      )[0]?.voice || null;
+
+    const exact = all.filter((v) => (v.lang || '').toLowerCase().replace('_', '-') === normalizedTarget);
+    if (exact.length > 0) return byQuality(exact);
+
+    const primary = all.filter((v) => (v.lang || '').toLowerCase().split(/[-_]/)[0] === primaryTarget);
+    if (primary.length > 0) return byQuality(primary);
+
+    const english = all.filter((v) => v.lang.toLowerCase().startsWith('en'));
+    if (english.length > 0) return byQuality(english);
+
+    return byQuality(all);
+  }
+
+  /**
+   * Out-of-the-box tuning per language — no user fiddling required.
+   * Thai needs a slightly slower rate for intelligibility; tonal pitch stays flat.
+   */
+  public static getTunedDefaults(langCode: string): { rate: number; pitch: number; sentenceDelayMs: number } {
+    const primary = (langCode || 'en-US').split(/[-_]/)[0].toLowerCase();
+    switch (primary) {
+      case 'th':
+        return { rate: 0.95, pitch: 1.0, sentenceDelayMs: 200 };
+      case 'de':
+        return { rate: 0.96, pitch: 0.99, sentenceDelayMs: 180 };
+      case 'ja':
+      case 'zh':
+      case 'ko':
+        return { rate: 0.95, pitch: 1.0, sentenceDelayMs: 200 };
+      default:
+        return { rate: 0.98, pitch: 1.0, sentenceDelayMs: 150 };
+    }
+  }
+
+  /**
+   * Resolves once device voices are actually loaded. Chrome/Edge deliver them
+   * asynchronously via voiceschanged; without this the first Play press can be silent.
+   */
+  public ensureVoicesLoaded(timeoutMs = 4000): Promise<TTSVoiceInfo[]> {
+    const current = this.getVoices().filter((v) => !v.isBuiltInStudioVoice);
+    if (current.length > 0) return Promise.resolve(this.getVoices());
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve(this.getVoices());
+      };
+      const timer = setTimeout(() => {
+        this.loadVoices();
+        finish();
+        clearTimeout(timer);
+      }, timeoutMs);
+      try {
+        if (this.synth) {
+          this.synth.onvoiceschanged = () => {
+            this.loadVoices();
+            finish();
+            clearTimeout(timer);
+          };
+          // Nudge some Chromium builds to populate the voice list
+          this.synth.getVoices();
+        } else {
+          finish();
+        }
+      } catch {
+        finish();
+      }
+    });
+  }
+
   public setVoiceByURI(uri: string) {
     const found = this.voices.find(v => v.voice.voiceURI === uri);
     if (found) {
@@ -628,6 +749,18 @@ export class TTSEngine {
   public loadSentences(sentences: string[], startIndex = 0) {
     this.sentences = sentences;
     this.currentSentenceIndex = Math.max(0, Math.min(startIndex, sentences.length - 1));
+    // Prebuild the local voice pack: word ranges + weights per sentence.
+    // Zero network, pure computation — seeking to any sentence is instant.
+    this.pack = sentences.map((s) => {
+      const ranges = extractWordRanges(s);
+      const totalWeight = ranges.reduce((sum, w) => sum + Math.max(1, w.word.length), 0) || 1;
+      return { ranges, totalWeight };
+    });
+  }
+
+  /** Per-word millisecond estimate at current rate (~14 chars/sec at 1.0×). */
+  private wordMsPerWeight(): number {
+    return 1000 / (14 * Math.max(0.5, this.rate));
   }
 
   private clearSentencePauseTimer() {
@@ -843,6 +976,13 @@ export class TTSEngine {
     await offlineAudioStorage.clearAudioCache();
   }
 
+  private stopInterpTimer() {
+    if (this.interpTimer) {
+      clearInterval(this.interpTimer);
+      this.interpTimer = null;
+    }
+  }
+
   public startPlayback(sentences?: string[], startIndex = 0) {
     if (sentences) {
       this.loadSentences(sentences, startIndex);
@@ -850,7 +990,9 @@ export class TTSEngine {
 
     if (this.sentences.length === 0) return;
 
+    this.generation++;
     this.clearSentencePauseTimer();
+    this.stopInterpTimer();
     this.isPlaying = true;
     this.isPaused = false;
     this.startHeartbeat();
@@ -892,14 +1034,21 @@ export class TTSEngine {
   }
 
   public stop() {
+    // Instant stop: invalidate every in-flight continuation first, then silence.
+    this.generation++;
     this.clearSentencePauseTimer();
     this.stopAudioProgressTimer();
+    this.stopInterpTimer();
     this.isPlaying = false;
     this.isPaused = false;
     this.stopSimulatedWordTimer();
     this.stopHeartbeat();
 
     if (this.currentAudioElement) {
+      try {
+        this.currentAudioElement.onended = null;
+        this.currentAudioElement.onerror = null;
+      } catch {}
       this.currentAudioElement.pause();
       this.currentAudioElement.currentTime = 0;
       this.currentAudioElement = null;
@@ -914,7 +1063,9 @@ export class TTSEngine {
   public nextSentence(): boolean {
     this.clearSentencePauseTimer();
     this.stopAudioProgressTimer();
+    this.stopInterpTimer();
     if (this.currentSentenceIndex < this.sentences.length - 1) {
+      this.generation++;
       this.currentSentenceIndex++;
       if (this.isPlaying) {
         this.playCurrentSentence();
@@ -932,7 +1083,9 @@ export class TTSEngine {
   public previousSentence(): boolean {
     this.clearSentencePauseTimer();
     this.stopAudioProgressTimer();
+    this.stopInterpTimer();
     if (this.currentSentenceIndex > 0) {
+      this.generation++;
       this.currentSentenceIndex--;
       if (this.isPlaying) {
         this.playCurrentSentence();
@@ -947,7 +1100,9 @@ export class TTSEngine {
   public jumpToSentence(index: number) {
     this.clearSentencePauseTimer();
     this.stopAudioProgressTimer();
+    this.stopInterpTimer();
     if (index >= 0 && index < this.sentences.length) {
+      this.generation++;
       this.currentSentenceIndex = index;
       if (this.isPlaying) {
         this.playCurrentSentence();
@@ -980,6 +1135,7 @@ export class TTSEngine {
     this.clearSentencePauseTimer();
     this.stopAudioProgressTimer();
     this.stopSimulatedWordTimer();
+    this.stopInterpTimer();
 
     // Cancel current speech / audio
     if (this.currentAudioElement) {
@@ -1013,12 +1169,21 @@ export class TTSEngine {
     }
 
     const modeConfig = CADENCE_MODES[this.currentCadenceMode] || CADENCE_MODES['natural-audiobook'];
-    const wordRanges = extractWordRanges(rawSentence);
+    // Word ranges come from the prebuilt local pack (same ranges every seek — no recompute)
+    const packEntry = this.pack[this.currentSentenceIndex];
+    const wordRanges = packEntry?.ranges || extractWordRanges(rawSentence);
 
     // Check if using a Built-in System Studio Voice
     const isBuiltinVoice = !this.selectedVoice || this.selectedVoice.voiceURI.startsWith('builtin-cloud-');
     const matchedBuiltin = BUILTIN_STUDIO_VOICES.find(v => v.voice.voiceURI === this.selectedVoice?.voiceURI);
     const cloudVoiceName = matchedBuiltin?.cloudVoiceName || 'Puck';
+
+    // Zero-API fast path: cloud selected but no backend key — skip the doomed
+    // network round-trip and synthesize locally immediately.
+    if (isBuiltinVoice && !this.cloudAvailable) {
+      this.playFallbackWebSpeech(rawSentence, textToSpeak, wordRanges, modeConfig);
+      return;
+    }
 
     if (isBuiltinVoice) {
       this.callbacks.onSentenceStart?.(this.currentSentenceIndex, rawSentence);
@@ -1036,9 +1201,11 @@ export class TTSEngine {
 
       this.prefetchUpcomingSentences(this.currentSentenceIndex, cloudVoiceName);
 
+      const gen = this.generation;
+      const sentenceIdx = this.currentSentenceIndex;
       this.fetchStudioAudio(textToSpeak, cloudVoiceName)
         .then((audioDataUrl) => {
-          if (!this.isPlaying || this.isPaused) return;
+          if (gen !== this.generation || !this.isPlaying || this.isPaused) return;
 
           const audio = new Audio(audioDataUrl);
           this.currentAudioElement = audio;
@@ -1052,6 +1219,7 @@ export class TTSEngine {
 
           // Accurately map audio timeline to words in sentence
           const updateWordHighlight = () => {
+            if (gen !== this.generation) return;
             if (!audio || audio.paused || audio.ended) return;
             const duration = audio.duration || 1;
             const current = audio.currentTime;
@@ -1069,7 +1237,7 @@ export class TTSEngine {
               if (targetIdx !== lastWordIdx && wordRanges[targetIdx]) {
                 lastWordIdx = targetIdx;
                 this.callbacks.onWordBoundary?.({
-                  sentenceIndex: this.currentSentenceIndex,
+                  sentenceIndex: sentenceIdx,
                   charIndex: wordRanges[targetIdx].charIndex,
                   charLength: wordRanges[targetIdx].charLength,
                   word: wordRanges[targetIdx].word,
@@ -1081,17 +1249,19 @@ export class TTSEngine {
           this.audioProgressTimer = setInterval(updateWordHighlight, 80);
 
           audio.onended = () => {
+            if (gen !== this.generation) return;
             this.stopAudioProgressTimer();
             ambienceEngine.setSpeakingState(false);
-            this.callbacks.onSentenceEnd?.(this.currentSentenceIndex);
+            this.callbacks.onSentenceEnd?.(sentenceIdx);
 
             if (this.isPlaying && !this.isPaused) {
-              const isParagraphEnd = /\n\s*$/.test(rawSentence) || this.currentSentenceIndex === this.sentences.length - 1;
+              const isParagraphEnd = /\n\s*$/.test(rawSentence) || sentenceIdx === this.sentences.length - 1;
               const pauseMs = calculatePunctuationPause(rawSentence, isParagraphEnd, modeConfig, this.sentenceDelayMs);
               const totalPause = pauseMs + modeConfig.shadowingDelayMs;
 
               if (totalPause > 0) {
                 this.sentencePauseTimer = setTimeout(() => {
+                  if (gen !== this.generation) return;
                   if (this.isPlaying && !this.isPaused) {
                     this.nextSentence();
                   }
@@ -1103,6 +1273,7 @@ export class TTSEngine {
           };
 
           audio.onerror = (err) => {
+            if (gen !== this.generation) return;
             console.warn('Audio playback error, falling back to Web Speech:', err);
             this.stopAudioProgressTimer();
             this.playFallbackWebSpeech(rawSentence, textToSpeak, wordRanges, modeConfig);
@@ -1112,25 +1283,33 @@ export class TTSEngine {
           try {
             audio.volume = 0;
             audio.play().then(() => {
+              if (gen !== this.generation) return;
               const steps = 6;
               let s = 0;
               const fade = setInterval(() => {
+                if (gen !== this.generation) {
+                  clearInterval(fade);
+                  return;
+                }
                 s++;
                 audio.volume = Math.min(this.volume, (this.volume * s) / steps);
                 if (s >= steps) clearInterval(fade);
               }, 10);
             }).catch((err) => {
+              if (gen !== this.generation) return;
               console.warn('Auto-play audio failed, falling back:', err);
               this.playFallbackWebSpeech(rawSentence, textToSpeak, wordRanges, modeConfig);
             });
           } catch {
             audio.play().catch((err) => {
+              if (gen !== this.generation) return;
               console.warn('Auto-play audio failed, falling back:', err);
               this.playFallbackWebSpeech(rawSentence, textToSpeak, wordRanges, modeConfig);
             });
           }
         })
         .catch((err) => {
+          if (gen !== this.generation) return;
           console.warn('Studio TTS fetch failed, fallback to local synth:', err);
           this.playFallbackWebSpeech(rawSentence, textToSpeak, wordRanges, modeConfig);
         });
@@ -1148,12 +1327,15 @@ export class TTSEngine {
     wordRanges: { charIndex: number; charLength: number; word: string }[],
     modeConfig: any
   ) {
+    const gen = this.generation;
+    const sentenceIdx = this.currentSentenceIndex;
     if (!this.synth || typeof SpeechSynthesisUtterance === 'undefined') {
       console.warn('TTS: Web Speech unavailable, skipping to next sentence');
       this.callbacks.onError?.(new Error('Web Speech synthesis unavailable in this browser'));
-      this.callbacks.onSentenceEnd?.(this.currentSentenceIndex);
+      this.callbacks.onSentenceEnd?.(sentenceIdx);
       if (this.isPlaying && !this.isPaused) {
         this.sentencePauseTimer = setTimeout(() => {
+          if (gen !== this.generation) return;
           if (this.isPlaying && !this.isPaused) this.nextSentence();
         }, 300);
       }
@@ -1162,19 +1344,71 @@ export class TTSEngine {
 
     const clauses = splitSentenceIntoClauses(rawSentence, this.currentCadenceMode);
     let clauseIdx = 0;
+    let interpLastEmitted = -1;
+
+    // Highlight interpolation: advances the highlight by estimated word timing
+    // between native boundary events, so highlighting stays glued to speech even
+    // on browsers that never fire onboundary (e.g. Firefox) or fire sparsely.
+    const emitWord = (idx: number) => {
+      if (idx === interpLastEmitted) return;
+      const w = wordRanges[idx];
+      if (!w) return;
+      interpLastEmitted = idx;
+      this.callbacks.onWordBoundary?.({
+        sentenceIndex: sentenceIdx,
+        charIndex: w.charIndex,
+        charLength: w.charLength,
+        word: w.word,
+      });
+    };
+    const startInterp = (fromWordIdx: number) => {
+      this.stopInterpTimer();
+      interpLastEmitted = fromWordIdx - 1;
+      this.interpBaseIdx = fromWordIdx;
+      this.interpBaseAt = performance.now();
+      emitWord(fromWordIdx);
+      const msPerWeight = this.wordMsPerWeight();
+      this.interpTimer = setInterval(() => {
+        if (gen !== this.generation) {
+          this.stopInterpTimer();
+          return;
+        }
+        if (!this.isPlaying || this.isPaused) {
+          // Freeze estimation while paused so resume continues in sync
+          this.interpBaseAt = performance.now();
+          return;
+        }
+        const elapsed = performance.now() - this.interpBaseAt;
+        let acc = 0;
+        let target = this.interpBaseIdx;
+        for (let i = this.interpBaseIdx; i < wordRanges.length; i++) {
+          acc += Math.max(1, wordRanges[i].word.length) * msPerWeight;
+          if (acc > elapsed) break;
+          target = i + 1;
+        }
+        if (target >= wordRanges.length) {
+          this.stopInterpTimer();
+          return;
+        }
+        emitWord(target);
+      }, 60);
+    };
 
     const playNextClause = () => {
+      if (gen !== this.generation) return;
       if (!this.isPlaying || this.isPaused) return;
 
       if (clauseIdx >= clauses.length) {
-        this.callbacks.onSentenceEnd?.(this.currentSentenceIndex);
+        this.stopInterpTimer();
+        this.callbacks.onSentenceEnd?.(sentenceIdx);
         if (this.isPlaying && !this.isPaused) {
-          const isParagraphEnd = /\n\s*$/.test(rawSentence) || this.currentSentenceIndex === this.sentences.length - 1;
+          const isParagraphEnd = /\n\s*$/.test(rawSentence) || sentenceIdx === this.sentences.length - 1;
           const pauseMs = calculatePunctuationPause(rawSentence, isParagraphEnd, modeConfig, this.sentenceDelayMs);
           const totalPause = pauseMs + modeConfig.shadowingDelayMs;
 
           if (totalPause > 0) {
             this.sentencePauseTimer = setTimeout(() => {
+              if (gen !== this.generation) return;
               if (this.isPlaying && !this.isPaused) {
                 this.nextSentence();
               }
@@ -1205,67 +1439,77 @@ export class TTSEngine {
       const eqConfig = PODCAST_EQ_PRESETS[this.currentEQPreset] || PODCAST_EQ_PRESETS['pro-podcast'];
 
       const utterance = new SpeechSynthesisUtterance(clauseTextToSpeak);
-      if (this.selectedVoice && !this.selectedVoice.voiceURI.startsWith('builtin-cloud-')) {
-        utterance.voice = this.selectedVoice;
-        utterance.lang = this.selectedVoice.lang;
+      // Zero-API path: cloud voices can't synthesize locally, so resolve an
+      // on-device voice for the document language instead of the browser default.
+      let utteranceVoice: SpeechSynthesisVoice | null = null;
+      if (this.selectedVoice && !TTSEngine.isCloudVoiceURI(this.selectedVoice.voiceURI)) {
+        utteranceVoice = this.selectedVoice;
+      } else {
+        utteranceVoice = this.getBestLocalVoiceForLanguage(this.targetLang);
+      }
+      if (utteranceVoice) {
+        utterance.voice = utteranceVoice;
+        utterance.lang = utteranceVoice.lang;
       }
       utterance.rate = dynamicParams.rate;
       utterance.pitch = Math.max(0.5, Math.min(2.0, dynamicParams.pitch * eqConfig.pitchFormantShift));
       utterance.volume = Math.max(0.1, Math.min(1.0, dynamicParams.volume * eqConfig.volumePeakCap));
 
       utterance.onstart = () => {
+        if (gen !== this.generation) return;
+        this.markSynthActivity();
         ambienceEngine.setSpeakingState(true);
         if (clauseIdx === 0) {
-          this.callbacks.onSentenceStart?.(this.currentSentenceIndex, rawSentence);
+          this.callbacks.onSentenceStart?.(sentenceIdx, rawSentence);
         }
 
-        const clauseFirstWordRange = wordRanges.find((w) => w.charIndex >= clause.startCharIndex);
-        if (clauseFirstWordRange) {
-          this.callbacks.onWordBoundary?.({
-            sentenceIndex: this.currentSentenceIndex,
-            charIndex: clauseFirstWordRange.charIndex,
-            charLength: clauseFirstWordRange.charLength,
-            word: clauseFirstWordRange.word,
-          });
-        }
+        const firstIdx = wordRanges.findIndex((w) => w.charIndex >= clause.startCharIndex);
+        startInterp(firstIdx === -1 ? 0 : firstIdx);
       };
 
       utterance.onboundary = (e: SpeechSynthesisEvent) => {
+        if (gen !== this.generation) return;
+        this.markSynthActivity();
         if (e.name === 'word' || !e.name) {
           this.hasReceivedNativeBoundary = true;
           this.stopSimulatedWordTimer();
 
           const absCharIndex = clause.startCharIndex + e.charIndex;
 
-          let matchedItem = wordRanges.find(
+          let matchedIdx = wordRanges.findIndex(
             (w) => absCharIndex >= w.charIndex && absCharIndex < w.charIndex + w.charLength + 2
           );
-          if (!matchedItem) {
-            matchedItem = wordRanges.find((w) => w.charIndex >= absCharIndex);
+          if (matchedIdx === -1) {
+            matchedIdx = wordRanges.findIndex((w) => w.charIndex >= absCharIndex);
           }
 
-          const targetCharIndex = matchedItem ? matchedItem.charIndex : absCharIndex;
-          const targetCharLength = matchedItem ? matchedItem.charLength : (e as any).charLength || 1;
-          const targetWord = matchedItem
-            ? matchedItem.word
-            : rawSentence.substring(targetCharIndex, targetCharIndex + targetCharLength);
-
-          this.callbacks.onWordBoundary?.({
-            sentenceIndex: this.currentSentenceIndex,
-            charIndex: targetCharIndex,
-            charLength: targetCharLength,
-            word: targetWord,
-          });
+          if (matchedIdx !== -1) {
+            // Snap interpolation to the true spoken position
+            this.interpBaseIdx = matchedIdx;
+            this.interpBaseAt = performance.now();
+            emitWord(matchedIdx);
+          } else {
+            const targetCharLength = (e as any).charLength || 1;
+            this.callbacks.onWordBoundary?.({
+              sentenceIndex: sentenceIdx,
+              charIndex: absCharIndex,
+              charLength: targetCharLength,
+              word: rawSentence.substring(absCharIndex, absCharIndex + targetCharLength),
+            });
+          }
         }
       };
 
       utterance.onend = () => {
+        if (gen !== this.generation) return;
         ambienceEngine.setSpeakingState(false);
         this.stopSimulatedWordTimer();
+        this.stopInterpTimer();
         clauseIdx++;
         if (clauseIdx < clauses.length) {
           const pause = Math.max(80, clause.pauseAfterMs);
           this.sentencePauseTimer = setTimeout(() => {
+            if (gen !== this.generation) return;
             if (this.isPlaying && !this.isPaused) {
               playNextClause();
             }
@@ -1276,7 +1520,9 @@ export class TTSEngine {
       };
 
       utterance.onerror = (e) => {
+        if (gen !== this.generation) return;
         this.stopSimulatedWordTimer();
+        this.stopInterpTimer();
         if (e.error !== 'interrupted' && e.error !== 'canceled') {
           console.warn('TTS Speech error:', e);
           this.callbacks.onError?.(new Error(`Speech error: ${e.error}`));
@@ -1284,6 +1530,7 @@ export class TTSEngine {
           clauseIdx++;
           if (this.isPlaying && !this.isPaused) {
             this.sentencePauseTimer = setTimeout(() => {
+              if (gen !== this.generation) return;
               if (this.isPlaying && !this.isPaused) {
                 if (clauseIdx < clauses.length) playNextClause();
                 else this.nextSentence();
@@ -1307,16 +1554,28 @@ export class TTSEngine {
   }
 
   /**
-   * Chromium bug workaround: speech synthesis can freeze or go idle on long documents.
-   * Periodically pausing and resuming keeps the internal audio context alive.
+   * Chromium marathon workaround: speech synthesis can go idle on very long
+   * sessions. Only nudge when the synth has been speaking with NO progress
+   * events for >25s (stuck long utterance) — never touch short utterances,
+   * where pause/resume truncates speech on some Chrome builds.
    */
+  private lastSynthActivity = 0;
+
+  private markSynthActivity() {
+    this.lastSynthActivity = Date.now();
+  }
+
   private startHeartbeat() {
     this.stopHeartbeat();
+    this.markSynthActivity();
     this.heartbeatTimer = setInterval(() => {
       if (this.synth && this.isPlaying && !this.isPaused) {
-        if (this.synth.speaking && !this.synth.paused) {
+        // Cloud-audio path doesn't use synth — nothing to keep alive
+        if (this.currentAudioElement && !this.currentAudioElement.paused) return;
+        if (this.synth.speaking && !this.synth.paused && Date.now() - this.lastSynthActivity > 25000) {
           this.synth.pause();
           this.synth.resume();
+          this.markSynthActivity();
         }
       }
     }, 12000);

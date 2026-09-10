@@ -315,6 +315,7 @@ interface ProfessionalVoiceLibraryProps {
   onApplyPresetNotification?: (presetName: string) => void;
   documentSentences?: string[];
   documentName?: string;
+  cloudAvailable?: boolean;
 }
 
 export const ProfessionalVoiceLibrary: React.FC<ProfessionalVoiceLibraryProps> = ({
@@ -332,6 +333,7 @@ export const ProfessionalVoiceLibrary: React.FC<ProfessionalVoiceLibraryProps> =
   onApplyPresetNotification,
   documentSentences = [],
   documentName,
+  cloudAvailable = false,
 }) => {
   const [viewMode, setViewMode] = useState<'presets' | 'voices' | 'offline-vault'>('presets');
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'male' | 'female' | 'academic' | 'narrative'>('all');
@@ -426,8 +428,14 @@ export const ProfessionalVoiceLibrary: React.FC<ProfessionalVoiceLibraryProps> =
   };
 
   // Pre-cache Current Document sentences (chunked, cancellable, quota-guarded)
+  // Cloud-only feature: local on-device voices synthesize live and need no download.
   const handlePrecacheDocument = async () => {
     if (!documentSentences || documentSentences.length === 0) return;
+    if (!cloudAvailable) {
+      setPrecacheSuccessToast('เสียงเครื่องไม่ต้องโหลดล่วงหน้า — ใส่ GEMINI_API_KEY ก่อนถ้าจะใช้เสียง Cloud');
+      setTimeout(() => setPrecacheSuccessToast(null), 5000);
+      return;
+    }
 
     const cleanList = documentSentences.filter((s) => s && s.trim().length > 0);
     const total = cleanList.length;

@@ -48,7 +48,7 @@ import {
   SAMPLE_DOCUMENTS,
   createDocumentFromSample,
 } from './services/pdfService';
-import { ttsEngine, extractWordRanges } from './services/ttsService';
+import { ttsEngine, TTSEngine, extractWordRanges } from './services/ttsService';
 import {
   build1000PagePhilosophicalCompendium,
   buildJungDedicatedBook,
@@ -340,14 +340,34 @@ export default function App() {
   }, []);
 
   // Initialize voices & documents
+  const [cloudAvailable, setCloudAvailable] = useState<boolean>(false);
+  const lastTunedDocId = useRef<string | null>(null);
+  const userTunedAudio = useRef<boolean>(false);
+
   useEffect(() => {
     refreshDocuments();
+
+    // Cloud detection: only offer Gemini HD voices when the backend has a key.
+    // No key => the app is fully local (Web Speech) and never touches the network for TTS.
+    fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const available = Boolean(data?.hasGeminiKey);
+        setCloudAvailable(available);
+        ttsEngine.setCloudAvailable(available);
+      })
+      .catch(() => {
+        setCloudAvailable(false);
+        ttsEngine.setCloudAvailable(false);
+      });
 
     const updateVoicesList = () => {
       const v = ttsEngine.getVoices();
       setVoices(v);
     };
 
+    // Device voices arrive async — wait for them so first Play is never silent.
+    ttsEngine.ensureVoicesLoaded().then(() => updateVoicesList());
     updateVoicesList();
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -355,62 +375,71 @@ export default function App() {
     }
   }, [refreshDocuments]);
 
+  const applyTunedDefaults = useCallback((docLang: string) => {
+    if (userTunedAudio.current) return;
+    const tuned = TTSEngine.getTunedDefaults(docLang);
+    setRate(tuned.rate);
+    ttsEngine.setRate(tuned.rate);
+    setPitch(tuned.pitch);
+    ttsEngine.setPitch(tuned.pitch);
+    setSentenceDelayMs(tuned.sentenceDelayMs);
+    ttsEngine.setSentenceDelay(tuned.sentenceDelayMs);
+  }, []);
+
   // Sync voice when current document or voice list changes
-  // Offline-first: when navigator reports offline, force a local (on-device) voice
-  // so playback never depends on Gemini cloud. Online keeps Studio HD default.
+  // Local-first: default is always the best ON-DEVICE voice for the document
+  // language — zero API, works offline. Cloud HD is opt-in via the voice picker.
+  // Voice lock: never re-pick mid-playback (browser voice-list refreshes must
+  // not restart or swap the voice in the middle of a 1000-page session).
   useEffect(() => {
     if (voices.length === 0) return;
-    const offline = typeof navigator !== 'undefined' && !navigator.onLine;
+    const docLang = currentDoc?.detectedLanguage || 'en-US';
+    ttsEngine.setTargetLang(docLang);
 
-    // Primary Baseline Voice: Prefer Built-in Studio HD US Male Voice (Puck / Charon)
-    const studioMaleVoice = voices.find((v) => v.isBuiltInStudioVoice && v.isUSMale) || voices.find((v) => v.isBuiltInStudioVoice);
-    const markVoice = voices.find((v) => v.name.toLowerCase().includes('mark'));
-    const localFallback =
-      voices.find((v) => !v.isBuiltInStudioVoice && v.isLocal && v.qualityGrade !== 'standard') ||
-      voices.find((v) => !v.isBuiltInStudioVoice && v.isLocal) ||
-      voices.find((v) => !v.isBuiltInStudioVoice);
+    // Tune out-of-the-box settings once per document (until the user tweaks audio)
+    if (currentDoc && lastTunedDocId.current !== currentDoc.id) {
+      lastTunedDocId.current = currentDoc.id;
+      applyTunedDefaults(docLang);
+    }
+
+    if (ttsEngine.getIsPlaying()) return;
+
+    const offline = typeof navigator !== 'undefined' && !navigator.onLine;
+    const localBest = ttsEngine.getBestLocalVoiceForLanguage(docLang);
+    const localBestInfo = localBest
+      ? voices.find((v) => v.voice.voiceURI === localBest.voiceURI) || null
+      : null;
+    const studioDefault =
+      voices.find((v) => v.isBuiltInStudioVoice && v.isUSMale) ||
+      voices.find((v) => v.isBuiltInStudioVoice) ||
+      null;
 
     if (!selectedVoice) {
-      const defaultToUse = offline
-        ? (localFallback || markVoice || voices[0])
-        : (studioMaleVoice || markVoice || voices[0]);
+      // Zero-config default: local voice. Cloud only if no local voice exists at all.
+      const defaultToUse = localBestInfo || (cloudAvailable && !offline ? studioDefault : null) || voices[0];
       if (defaultToUse) {
         setSelectedVoice(defaultToUse);
         ttsEngine.setVoiceByURI(defaultToUse.voice.voiceURI);
-        return;
       }
-    }
-
-    // If we just went offline while a cloud voice is selected, auto-switch to local
-    if (offline && selectedVoice?.isBuiltInStudioVoice && localFallback) {
-      setSelectedVoice(localFallback);
-      ttsEngine.setVoiceByURI(localFallback.voice.voiceURI);
       return;
     }
 
-    // Check if current voice matches document language
-    const docLang = currentDoc?.detectedLanguage || 'en-US';
-    const primaryDocLang = docLang.split(/[-_]/)[0].toLowerCase();
+    // Cloud selected but unusable (no key or offline) → auto-switch to local twin
+    if (selectedVoice.isBuiltInStudioVoice && (!cloudAvailable || offline) && localBestInfo) {
+      setSelectedVoice(localBestInfo);
+      ttsEngine.setVoiceByURI(localBestInfo.voice.voiceURI);
+      return;
+    }
 
-    if (
-      !selectedVoice ||
-      (!selectedVoice.lang.toLowerCase().startsWith(primaryDocLang) && primaryDocLang !== 'en')
-    ) {
-      if (primaryDocLang === 'en' && studioMaleVoice) {
-        setSelectedVoice(studioMaleVoice);
-        ttsEngine.setVoiceByURI(studioMaleVoice.voice.voiceURI);
-      } else {
-        const best = ttsEngine.getBestVoiceForLanguage(docLang);
-        if (best) {
-          const found = voices.find((v) => v.voice.voiceURI === best.voiceURI);
-          if (found) {
-            setSelectedVoice(found);
-            ttsEngine.setVoiceByURI(found.voice.voiceURI);
-          }
-        }
+    // Language mismatch → best local voice for the document language
+    const primaryDocLang = docLang.split(/[-_]/)[0].toLowerCase();
+    if (!selectedVoice.lang.toLowerCase().startsWith(primaryDocLang) && primaryDocLang !== 'en') {
+      if (localBestInfo) {
+        setSelectedVoice(localBestInfo);
+        ttsEngine.setVoiceByURI(localBestInfo.voice.voiceURI);
       }
     }
-  }, [currentDoc, voices, selectedVoice]);
+  }, [currentDoc, voices, selectedVoice, cloudAvailable, applyTunedDefaults]);
 
   // Setup TTS Engine Callbacks
   useEffect(() => {
@@ -450,13 +479,15 @@ export default function App() {
         setActiveWordLength(null);
         setActiveWordText(null);
 
-        // Save progress periodically and mark page as completed if reached the end
+        // Save progress throttled (every 5th sentence or page end) — a 1000-page
+        // book is ~40k sentences; writing IndexedDB per sentence churns for nothing.
         if (currentDocRef.current) {
           const doc = currentDocRef.current;
           const pageIdx = currentPageIndexRef.current;
           const page = doc.pages[pageIdx];
+          const isPageEnd = page ? sentenceIdx >= page.sentences.length - 1 : true;
 
-          if (page && sentenceIdx >= page.sentences.length - 1) {
+          if (page && isPageEnd) {
             const pageKey = `${doc.id}_p${pageIdx}`;
             setSessionCompletedPages((prev) => {
               const next = new Set(prev);
@@ -465,13 +496,15 @@ export default function App() {
             });
           }
 
-          updateReadingProgress(doc.id, {
-            pageIndex: pageIdx,
-            sentenceIndex: sentenceIdx,
-            paragraphIndex: 0,
-            completed: false,
-            lastReadAt: Date.now(),
-          });
+          if (isPageEnd || sentenceIdx % 5 === 0) {
+            updateReadingProgress(doc.id, {
+              pageIndex: pageIdx,
+              sentenceIndex: sentenceIdx,
+              paragraphIndex: 0,
+              completed: false,
+              lastReadAt: Date.now(),
+            });
+          }
         }
       },
       onPageEnd: () => {
@@ -577,6 +610,11 @@ export default function App() {
     const page = currentDoc.pages[currentPageIndex];
     if (!page || page.sentences.length === 0) return;
 
+    // Never silent on first press: wait for device voices before speaking
+    ttsEngine.ensureVoicesLoaded().then(() => {
+      const v = ttsEngine.getVoices();
+      if (v.length > 0) setVoices(v);
+    });
     ttsEngine.setRate(rate);
     ttsEngine.setPitch(pitch);
     ttsEngine.setVolume(volume);
@@ -705,11 +743,13 @@ export default function App() {
   };
 
   const handleRateChange = (newRate: number) => {
+    userTunedAudio.current = true;
     setRate(newRate);
     ttsEngine.setRate(newRate);
   };
 
   const handlePitchChange = (newPitch: number) => {
+    userTunedAudio.current = true;
     setPitch(newPitch);
     ttsEngine.setPitch(newPitch);
   };
@@ -756,6 +796,7 @@ export default function App() {
     : false;
 
   const handleSentenceDelayChange = (ms: number) => {
+    userTunedAudio.current = true;
     setSentenceDelayMs(ms);
     localStorage.setItem('pdf_tts_sentence_delay', ms.toString());
     ttsEngine.setSentenceDelay(ms);
@@ -791,7 +832,7 @@ export default function App() {
   const handleChangeTheme = (newTheme: ReaderTheme) => {
     setTheme(newTheme);
     localStorage.setItem('pdf_tts_theme', newTheme);
-    if (newTheme === 'dark') {
+    if (newTheme === 'dark' || newTheme === 'oled' || newTheme === 'nord') {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
@@ -800,7 +841,7 @@ export default function App() {
 
   // Sync dark class on mount
   useEffect(() => {
-    if (theme === 'dark') {
+    if (theme === 'dark' || theme === 'oled' || theme === 'nord') {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
@@ -907,7 +948,7 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen flex flex-col font-sans select-none antialiased ${theme === 'dark' || theme === 'oled' || theme === 'nord' ? 'dark bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+    <div className="min-h-screen flex flex-col font-sans select-none antialiased bg-[var(--paper)] text-[var(--ink)]">
       {/* Top Navigation - Collapsed/Hidden in Zen Mode for distraction-free reading */}
       {!zenMode && (
         <Header
@@ -1048,6 +1089,7 @@ export default function App() {
         onSelectAmbience={setAmbience}
         documentSentences={currentDoc?.pages?.[currentPageIndex]?.sentences || currentDoc?.pages?.flatMap(p => p.sentences) || []}
         documentName={currentDoc?.name || 'Active Document'}
+        cloudAvailable={cloudAvailable}
       />
 
       {/* Pronunciation, IPA, Stress & Word Meaning Modal */}
