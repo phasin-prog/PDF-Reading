@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { DocumentReader } from './components/DocumentReader';
 import { AudioPlayerBar } from './components/AudioPlayerBar';
@@ -169,9 +169,20 @@ export default function App() {
   const [highlightMode, setHighlightMode] = useState<HighlightMode>(() => {
     return (localStorage.getItem('pdf_tts_highlight_mode') as HighlightMode) || 'word';
   });
-  const [activeWordCharIndex, setActiveWordCharIndex] = useState<number | null>(null);
-  const [activeWordLength, setActiveWordLength] = useState<number | null>(null);
-  const [activeWordText, setActiveWordText] = useState<string | null>(null);
+  const [activeWord, setActiveWord] = useState<{ charIndex: number; charLength: number; word: string } | null>(null);
+  // Mirror to dedupe 60-80ms boundary ticks for the same word — one render per NEW word only
+  const activeWordRef = useRef<{ charIndex: number; charLength: number; word: string } | null>(null);
+  const setActiveWordOnce = useCallback((w: { charIndex: number; charLength: number; word: string } | null) => {
+    const prev = activeWordRef.current;
+    if (
+      (prev === null && w === null) ||
+      (prev !== null && w !== null && prev.charIndex === w.charIndex && prev.charLength === w.charLength)
+    ) {
+      return;
+    }
+    activeWordRef.current = w;
+    setActiveWord(w);
+  }, []);
 
   const handleToggleHighlightMode = () => {
     setHighlightMode((prev) => {
@@ -445,22 +456,17 @@ export default function App() {
   useEffect(() => {
     ttsEngine.setCallbacks({
       onWordBoundary: (boundary) => {
-        setActiveWordCharIndex(boundary.charIndex);
-        setActiveWordLength(boundary.charLength);
-        setActiveWordText(boundary.word);
+        setActiveWordOnce({ charIndex: boundary.charIndex, charLength: boundary.charLength, word: boundary.word });
       },
       onSentenceStart: (sentenceIdx, text) => {
         setCurrentSentenceIndex(sentenceIdx);
-        setActiveWordCharIndex(0);
 
         // Pre-detect first word range for immediate feedback
         const wordRanges = extractWordRanges(text);
         if (wordRanges.length > 0) {
-          setActiveWordLength(wordRanges[0].charLength);
-          setActiveWordText(wordRanges[0].word);
+          setActiveWordOnce({ charIndex: 0, charLength: wordRanges[0].charLength, word: wordRanges[0].word });
         } else {
-          setActiveWordLength(null);
-          setActiveWordText(null);
+          setActiveWordOnce(null);
         }
 
         // Update Media Session API for mobile lock screen & on-the-go controls
@@ -475,9 +481,7 @@ export default function App() {
         }
       },
       onSentenceEnd: (sentenceIdx) => {
-        setActiveWordCharIndex(null);
-        setActiveWordLength(null);
-        setActiveWordText(null);
+        setActiveWordOnce(null);
 
         // Save progress throttled (every 5th sentence or page end) — a 1000-page
         // book is ~40k sentences; writing IndexedDB per sentence churns for nothing.
@@ -644,9 +648,7 @@ export default function App() {
     ttsEngine.stop();
     setIsPlaying(false);
     setIsPaused(false);
-    setActiveWordCharIndex(null);
-    setActiveWordLength(null);
-    setActiveWordText(null);
+    setActiveWordOnce(null);
   };
 
   const handleNextSentence = () => {
@@ -712,14 +714,11 @@ export default function App() {
     if (!page) return;
 
     setCurrentSentenceIndex(sentenceIdx);
-    setActiveWordCharIndex(0);
     const words = extractWordRanges(page.sentences[sentenceIdx] || '');
     if (words.length > 0) {
-      setActiveWordLength(words[0].charLength);
-      setActiveWordText(words[0].word);
+      setActiveWordOnce({ charIndex: 0, charLength: words[0].charLength, word: words[0].word });
     } else {
-      setActiveWordLength(null);
-      setActiveWordText(null);
+      setActiveWordOnce(null);
     }
     ttsEngine.loadSentences(page.sentences, sentenceIdx);
     ttsEngine.startPlayback(page.sentences, sentenceIdx);
@@ -930,25 +929,42 @@ export default function App() {
     return () => clearTimeout(t);
   }, [ttsError]);
 
-  const playbackState: PlaybackState = {
-    isPlaying,
-    isPaused,
-    currentDocumentId: currentDoc?.id || null,
-    currentPageIndex,
-    currentSentenceIndex,
-    rate,
-    pitch,
-    volume,
-    voiceURI: selectedVoice?.voice.voiceURI || null,
-    targetLang: currentDoc?.detectedLanguage || 'en-US',
-    autoScroll,
-    sleepTimerEnd,
-    sleepTimerRemainingMinutes: sleepTimerRemaining,
-    profile: narratorProfile,
-  };
+  const playbackState: PlaybackState = useMemo(
+    () => ({
+      isPlaying,
+      isPaused,
+      currentDocumentId: currentDoc?.id || null,
+      currentPageIndex,
+      currentSentenceIndex,
+      rate,
+      pitch,
+      volume,
+      voiceURI: selectedVoice?.voice.voiceURI || null,
+      targetLang: currentDoc?.detectedLanguage || 'en-US',
+      autoScroll,
+      sleepTimerEnd,
+      sleepTimerRemainingMinutes: sleepTimerRemaining,
+      profile: narratorProfile,
+    }),
+    [
+      isPlaying,
+      isPaused,
+      currentDoc,
+      currentPageIndex,
+      currentSentenceIndex,
+      rate,
+      pitch,
+      volume,
+      selectedVoice,
+      autoScroll,
+      sleepTimerEnd,
+      sleepTimerRemaining,
+      narratorProfile,
+    ]
+  );
 
   return (
-    <div className="min-h-screen flex flex-col font-sans select-none antialiased bg-[var(--paper)] text-[var(--ink)]">
+    <div className="min-h-screen flex flex-col font-sans antialiased bg-[var(--paper)] text-[var(--ink)]">
       {/* Top Navigation - Collapsed/Hidden in Zen Mode for distraction-free reading */}
       {!zenMode && (
         <Header
@@ -985,8 +1001,8 @@ export default function App() {
           autoScroll={autoScroll}
           sessionReadingSeconds={sessionReadingSeconds}
           sessionPagesCompleted={sessionCompletedPages.size}
-          activeWordCharIndex={activeWordCharIndex}
-          activeWordLength={activeWordLength}
+          activeWordCharIndex={activeWord?.charIndex ?? null}
+          activeWordLength={activeWord?.charLength ?? null}
           highlightMode={highlightMode}
           pageViewMode={pageViewMode}
           autoAdvancePage={autoAdvancePage}
@@ -1033,7 +1049,7 @@ export default function App() {
         <AudioPlayerBar
           playbackState={playbackState}
           activeSentenceText={activeSentenceText}
-          activeWordText={activeWordText}
+          activeWordText={activeWord?.word ?? null}
           highlightMode={highlightMode}
           currentProfile={narratorProfile}
           cadenceMode={cadenceMode}
@@ -1168,10 +1184,10 @@ export default function App() {
       <PageNotesDrawerModal
         isOpen={isPageNotesOpen}
         onClose={() => setIsPageNotesOpen(false)}
-        document={currentDoc}
+        currentDoc={currentDoc}
         currentPageIndex={currentPageIndex}
         bookmarks={userBookmarks}
-        onSaveBookmarkNote={handleSaveBookmarkNote}
+        onSaveNote={handleSaveBookmarkNote}
         onDeleteBookmark={handleDeleteBookmark}
         onSelectPage={(pageIdx) => {
           handlePageChange(pageIdx);
@@ -1219,24 +1235,7 @@ export default function App() {
         totalSentences={currentDoc?.pages[currentPageIndex]?.sentences.length || 0}
         currentPageNumber={currentPageIndex + 1}
         totalPages={currentDoc?.pages.length || 1}
-        playbackState={{
-          isPlaying,
-          isPaused,
-          rate,
-          pitch,
-          volume,
-          currentSentenceIndex,
-          totalSentences: currentDoc?.pages[currentPageIndex]?.sentences.length || 0,
-          currentPageIndex,
-          totalPages: currentDoc?.pages.length || 1,
-          selectedVoiceURI: selectedVoice?.voice.voiceURI || null,
-          selectedVoiceName: selectedVoice?.name,
-          currentProfile: narratorProfile,
-          cadenceMode,
-          sentenceDelayMs,
-          podcastEQPreset,
-          ambienceSoundscape: ambience,
-        }}
+        playbackState={playbackState}
         onTogglePlay={isPlaying ? handlePause : handlePlay}
         onSeekSentence={(offset) => {
           const nextIdx = currentSentenceIndex + offset;

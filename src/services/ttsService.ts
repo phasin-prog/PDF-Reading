@@ -820,42 +820,67 @@ export class TTSEngine {
       throw new Error('Offline: audio not cached, using local voice');
     }
 
-    // 4. Tier 3: Network API call to Gemini TTS engine
-    const response = await fetch('/api/tts/generate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text: cleanText,
-        voiceName,
-        rate: this.rate,
-        pitch: this.pitch,
-      }),
-    });
+    // 4. Tier 3: Network API call to Gemini TTS engine (60s timeout + 1 retry)
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
+      try {
+        const response = await fetch('/api/tts/generate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            text: cleanText,
+            voiceName,
+            rate: this.rate,
+            pitch: this.pitch,
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
 
-    if (!response.ok) {
-      throw new Error(`TTS API returned ${response.status}`);
+        if (!response.ok) {
+          throw new Error(`TTS API returned ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (!data.success || !data.audioBase64) {
+          throw new Error(data.error || 'Failed to generate speech');
+        }
+
+        // Validate payload before caching: non-empty base64, sane size (<15MB decoded)
+        const approxBytes = Math.round((data.audioBase64.length * 3) / 4);
+        if (approxBytes < 100 || approxBytes > 15 * 1024 * 1024) {
+          throw new Error(`Invalid TTS audio payload (${approxBytes} bytes)`);
+        }
+
+        const dataUrl = `data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`;
+
+        // 5. Save to Tier 1 RAM Cache and Tier 2 IndexedDB
+        memoryAudioCache.set(audioKey, dataUrl);
+        await offlineAudioStorage.storeAudioClip(voiceName, cleanText, dataUrl, {
+          ...metadata,
+          rate: this.rate,
+          pitch: this.pitch,
+          profile: this.currentProfile,
+          cadenceMode: this.currentCadenceMode,
+        });
+
+        return dataUrl;
+      } catch (err) {
+        clearTimeout(timeout);
+        lastErr = err;
+        // Don't retry aborts caused by stop/seek — fail over to local voice immediately
+        if (err instanceof DOMException && err.name === 'AbortError') break;
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 800));
+          continue;
+        }
+      }
     }
-
-    const data = await response.json();
-    if (!data.success || !data.audioBase64) {
-      throw new Error(data.error || 'Failed to generate speech');
-    }
-
-    const dataUrl = `data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`;
-
-    // 4. Save to Tier 1 RAM Cache and Tier 2 IndexedDB
-    memoryAudioCache.set(audioKey, dataUrl);
-    await offlineAudioStorage.storeAudioClip(voiceName, cleanText, dataUrl, {
-      ...metadata,
-      rate: this.rate,
-      pitch: this.pitch,
-      profile: this.currentProfile,
-      cadenceMode: this.currentCadenceMode,
-    });
-
-    return dataUrl;
+    throw lastErr instanceof Error ? lastErr : new Error('Failed to generate speech');
   }
 
   // Prefetch upcoming sentences in background with high performance lookahead window
@@ -1214,8 +1239,15 @@ export class TTSEngine {
           this.attachMastering(audio);
 
           let lastWordIdx = -1;
-          // Weight words by length so highlight tracks natural speech, not linear steps
-          const totalWeight = wordRanges.reduce((s, w) => s + Math.max(1, w.word.length), 0) || 1;
+          // Weight words by length PLUS punctuation pauses (commas/breaths take
+          // real time in speech) so highlight tracks natural speech, not linear steps
+          const wordWeights = wordRanges.map((w) => {
+            let weight = Math.max(1, w.word.length);
+            if (/[,;:—–-]$/.test(w.word)) weight += 3;
+            if (/[.?!…]$/.test(w.word)) weight += 6;
+            return weight;
+          });
+          const totalWeight = wordWeights.reduce((s, w) => s + w, 0) || 1;
 
           // Accurately map audio timeline to words in sentence
           const updateWordHighlight = () => {
@@ -1230,7 +1262,7 @@ export class TTSEngine {
               let acc = 0;
               let targetIdx = 0;
               for (let i = 0; i < wordRanges.length; i++) {
-                acc += Math.max(1, wordRanges[i].word.length);
+                acc += wordWeights[i];
                 if (acc >= targetWeight) { targetIdx = i; break; }
                 targetIdx = i;
               }
@@ -1382,7 +1414,10 @@ export class TTSEngine {
         let acc = 0;
         let target = this.interpBaseIdx;
         for (let i = this.interpBaseIdx; i < wordRanges.length; i++) {
-          acc += Math.max(1, wordRanges[i].word.length) * msPerWeight;
+          let wWeight = Math.max(1, wordRanges[i].word.length);
+          if (/[,;:—–-]$/.test(wordRanges[i].word)) wWeight += 3;
+          if (/[.?!…]$/.test(wordRanges[i].word)) wWeight += 6;
+          acc += wWeight * msPerWeight;
           if (acc > elapsed) break;
           target = i + 1;
         }

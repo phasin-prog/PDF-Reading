@@ -416,15 +416,19 @@ export function detectLanguage(text: string): string {
 /**
  * Extract text from a PDF file using client-side PDF.js
  */
-export async function parsePdfFile(file: File): Promise<DocumentItem> {
+export async function parsePdfFile(
+  file: File,
+  onProgress?: (page: number, total: number) => void
+): Promise<DocumentItem> {
   const arrayBuffer = await file.arrayBuffer();
-  return parsePdfArrayBuffer(arrayBuffer, file.name, file.size);
+  return parsePdfArrayBuffer(arrayBuffer, file.name, file.size, onProgress);
 }
 
 export async function parsePdfArrayBuffer(
   arrayBuffer: ArrayBuffer,
   fileName: string,
-  fileSize: number
+  fileSize: number,
+  onProgress?: (page: number, total: number) => void
 ): Promise<DocumentItem> {
   const loadingTask = pdfjsLib.getDocument({
     data: new Uint8Array(arrayBuffer),
@@ -467,6 +471,12 @@ export async function parsePdfArrayBuffer(
       sentences: sentences.length > 0 ? sentences : [pageCleanText || `[Page ${pageNum} has no extractable text]`],
       paragraphs: paragraphs.length > 0 ? paragraphs : [pageCleanText],
     });
+
+    // Report progress + yield so the upload UI paints on 1000-page books
+    onProgress?.(pageNum, numPages);
+    if (pageNum % 5 === 0) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
   }
 
   // P0-3: re-chain sentences split by page breaks (display text untouched)

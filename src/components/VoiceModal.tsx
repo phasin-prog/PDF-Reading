@@ -4,25 +4,15 @@ import {
   Search,
   Volume2,
   Check,
-  WifiOff,
-  Globe,
-  Sparkles,
-  BookOpen,
-  Award,
-  Sliders,
-  Mic,
-  Activity,
+  Play,
   Gauge,
   RotateCcw,
-  Play,
-  VolumeX,
-  ChevronDown,
-  ChevronUp,
-  Download,
-  UserCheck,
-  Info,
-  ShieldCheck,
+  Sliders,
+  Mic,
+  BookOpen,
+  Award,
   Headphones,
+  Sparkles,
 } from 'lucide-react';
 import { TTSVoiceInfo, VoiceNarratorProfile, CadenceMode } from '../types';
 import { ttsEngine } from '../services/ttsService';
@@ -52,13 +42,14 @@ interface VoiceModalProps {
   cloudAvailable?: boolean;
 }
 
+type Tab = 'voices' | 'studio' | 'reading' | 'sound';
+
 export const VoiceModal: React.FC<VoiceModalProps> = ({
   isOpen,
   onClose,
   voices,
   selectedVoiceURI,
   onSelectVoice,
-  currentLang,
   currentProfile = 'standard',
   onSelectProfile,
   currentCadenceMode = 'natural-audiobook',
@@ -74,17 +65,12 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLangCategory, setSelectedLangCategory] = useState<string>('all');
   const [onlyOffline, setOnlyOffline] = useState(false);
-  const [onlyNatural, setOnlyNatural] = useState(false);
-  const [onlyUSMale, setOnlyUSMale] = useState(false);
-  const [activeTab, setActiveTab] = useState<'pro-library' | 'voices' | 'profiles' | 'cadence' | 'equalizer' | 'ambience'>(cloudAvailable ? 'pro-library' : 'voices');
+  const [activeTab, setActiveTab] = useState<Tab>(cloudAvailable ? 'studio' : 'voices');
   const [appliedPresetToast, setAppliedPresetToast] = useState<string | null>(null);
   const [previewingURI, setPreviewingURI] = useState<string | null>(null);
-
-  // Rate & Pitch Tuning State for live audition
   const [previewRate, setPreviewRate] = useState<number>(0.98);
   const [previewPitch, setPreviewPitch] = useState<number>(1.0);
 
-  // Group languages for category filter tabs
   const languageOptions = useMemo(() => {
     const map = new Map<string, { code: string; label: string; count: number }>();
     for (const v of voices) {
@@ -101,63 +87,22 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   }, [voices]);
 
   const filteredVoices = useMemo(() => {
-    return voices.filter((v) => {
+    const localFirst = [...voices].sort((a, b) => Number(b.isLocal) - Number(a.isLocal));
+    return localFirst.filter((v) => {
       const primary = (v.lang || 'en').split(/[-_]/)[0].toLowerCase();
-      if (selectedLangCategory !== 'all' && primary !== selectedLangCategory) {
-        return false;
-      }
-      if (onlyOffline && !v.isLocal) {
-        return false;
-      }
-      if (onlyNatural && v.qualityGrade === 'standard') {
-        return false;
-      }
-      if (onlyUSMale) {
-        const name = v.name.toLowerCase();
-        const lang = v.lang.toLowerCase();
-        const isUS = lang.includes('us') || lang.startsWith('en');
-        const isMaleNamed =
-          name.includes('guy') ||
-          name.includes('christopher') ||
-          name.includes('mark') ||
-          name.includes('david') ||
-          name.includes('alex') ||
-          name.includes('tom') ||
-          name.includes('roger') ||
-          name.includes('steffan') ||
-          name.includes('fred') ||
-          name.includes('daniel') ||
-          name.includes('matthew') ||
-          name.includes('joey') ||
-          name.includes('google') ||
-          v.isUSMale;
-        if (!isUS || !isMaleNamed) {
-          return false;
-        }
-      }
+      if (selectedLangCategory !== 'all' && primary !== selectedLangCategory) return false;
+      if (onlyOffline && !v.isLocal && !v.isBuiltInStudioVoice) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         return (
           v.name.toLowerCase().includes(q) ||
           (v.lang && v.lang.toLowerCase().includes(q)) ||
-          (v.langName && v.langName.toLowerCase().includes(q)) ||
-          (v.description && v.description.toLowerCase().includes(q))
+          (v.langName && v.langName.toLowerCase().includes(q))
         );
       }
       return true;
     });
-  }, [voices, selectedLangCategory, onlyOffline, onlyNatural, onlyUSMale, searchQuery]);
-
-  const handleRecommendEnglishJungVoice = () => {
-    const enVoices = voices.filter((v) => v.lang.toLowerCase().startsWith('en'));
-    if (enVoices.length > 0) {
-      const best = enVoices[0];
-      onSelectVoice(best);
-      if (onSelectProfile) {
-        onSelectProfile('philosopher');
-      }
-    }
-  };
+  }, [voices, selectedLangCategory, onlyOffline, searchQuery]);
 
   const handleSelectVoice = (v: TTSVoiceInfo) => {
     if (v.isBuiltInStudioVoice && !cloudAvailable) {
@@ -169,20 +114,17 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
   };
 
   const handlePreviewVoice = (v: TTSVoiceInfo) => {
-    // Cloud voices need a backend key — fail loudly instead of silently
     if (v.isBuiltInStudioVoice && !cloudAvailable) {
       setAppliedPresetToast('เสียง Cloud ต้องใส่ GEMINI_API_KEY ใน .env ก่อน (เสียงเครื่องใช้ได้เลย)');
       setTimeout(() => setAppliedPresetToast(null), 4000);
       return;
     }
-    // Isolate audition tuning: restore main playback rate/pitch after preview
     const mainRate = ttsEngine.getRate();
     const mainPitch = ttsEngine.getPitch();
     setPreviewingURI(v.voice.voiceURI);
     ttsEngine.setRate(previewRate);
     ttsEngine.setPitch(previewPitch);
     ttsEngine.previewVoice(v.voice);
-
     setTimeout(() => {
       setPreviewingURI(null);
       ttsEngine.setRate(mainRate);
@@ -190,690 +132,314 @@ export const VoiceModal: React.FC<VoiceModalProps> = ({
     }, 4000);
   };
 
-  const renderVoicesTab = () => (
-    <div className="flex-1 overflow-y-auto flex flex-col font-sans bg-slate-950 text-slate-100">
-      {/* Realtime Audition Tuner Bar */}
-      <div className="px-5 py-3.5 bg-slate-900/40 border-b border-slate-800/80 space-y-2.5">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
-            <Gauge className="w-3.5 h-3.5 text-slate-400" />
-            <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
-              Audition Velocity & Tone
-            </span>
-          </div>
-          <div className="flex items-center gap-3 text-xs font-mono">
-            <span className="text-slate-400">Rate: <strong className="text-slate-200">{previewRate.toFixed(2)}×</strong></span>
-            <span className="text-slate-400">Tone: <strong className="text-slate-200">{previewPitch.toFixed(2)}×</strong></span>
-            <button
-              type="button"
-              onClick={() => {
-                setPreviewRate(0.98);
-                setPreviewPitch(1.0);
-                ttsEngine.setRate(0.98);
-                ttsEngine.setPitch(1.0);
-              }}
-              className="p-1 rounded-md bg-slate-800/60 text-slate-400 hover:text-slate-200 transition"
-              title="Reset Rate & Pitch"
-            >
-              <RotateCcw className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
+  if (!isOpen) return null;
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <div className="flex justify-between text-[11px] text-slate-400">
-              <span>Reading Velocity</span>
-              <span className="font-mono">{previewRate.toFixed(2)}×</span>
-            </div>
-            <input
-              type="range"
-              min="0.75"
-              max="2.0"
-              step="0.05"
-              value={previewRate}
-              onChange={(e) => {
-                const val = parseFloat(e.target.value);
-                setPreviewRate(val);
-                ttsEngine.setRate(val);
-              }}
-              className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
-            />
-          </div>
+  const card =
+    'p-3.5 rounded-xl border border-[var(--line)] bg-[var(--surface)] transition text-left w-full';
+  const cardActive = 'border-[var(--accent)] ring-1 ring-[var(--accent)]';
 
-          <div className="space-y-1">
-            <div className="flex justify-between text-[11px] text-slate-400">
-              <span>Acoustic Pitch</span>
-              <span className="font-mono">{previewPitch.toFixed(2)}×</span>
-            </div>
-            <input
-              type="range"
-              min="0.8"
-              max="1.2"
-              step="0.02"
-              value={previewPitch}
-              onChange={(e) => {
-                const val = parseFloat(e.target.value);
-                setPreviewPitch(val);
-                ttsEngine.setPitch(val);
-              }}
-              className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
-            />
-          </div>
-        </div>
-      </div>
+  const tabs: Array<{ id: Tab; label: string; Icon: React.ElementType }> = [
+    { id: 'voices', label: 'Voices', Icon: Mic },
+    { id: 'studio', label: 'Studio', Icon: Sparkles },
+    { id: 'reading', label: 'Reading', Icon: BookOpen },
+    { id: 'sound', label: 'Sound', Icon: Sliders },
+  ];
 
-      {/* Filters & Command Search Area */}
-      <div className="px-5 py-3 bg-slate-900/20 border-b border-slate-800/60 space-y-2.5">
-        <div className="flex flex-col sm:flex-row gap-2">
-          <div className="relative flex-1">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filter voices by name, accent, or region..."
-              className="w-full pl-8 pr-7 py-1.5 text-xs bg-slate-900/60 rounded-lg border border-slate-800 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/60"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
+  return (
+    <div id="voice-selection-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-5">
+      <div className="w-full max-w-3xl max-h-[88vh] flex flex-col rounded-xl bg-[var(--surface)] border border-[var(--line)] shadow-xl overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-[var(--line)] flex items-center gap-3">
+          <Headphones className="w-4 h-4 text-[var(--ink-2)] shrink-0" />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-[15px] font-semibold truncate">Voice & Audio</h2>
+            <p className="text-xs text-[var(--ink-3)] truncate">
+              {voices.length} voices{cloudAvailable ? '' : ' · local only (no API key)'}
+            </p>
           </div>
-
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <button
-              onClick={() => setOnlyNatural(!onlyNatural)}
-              className={`px-2.5 py-1.5 text-xs rounded-lg border transition font-medium cursor-pointer ${
-                onlyNatural
-                  ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-300'
-                  : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Natural HD Only
-            </button>
-            <button
-              onClick={() => setOnlyUSMale(!onlyUSMale)}
-              className={`px-2.5 py-1.5 text-xs rounded-lg border transition font-medium cursor-pointer ${
-                onlyUSMale
-                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
-                  : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              US Male Presets
-            </button>
-          </div>
-        </div>
-
-        {/* Language Category Chips */}
-        <div className="flex items-center gap-1 overflow-x-auto scrollbar-none pb-0.5">
-          <button
-            onClick={() => setSelectedLangCategory('all')}
-            className={`px-2.5 py-1 text-xs rounded-md font-medium whitespace-nowrap transition cursor-pointer ${
-              selectedLangCategory === 'all'
-                ? 'bg-slate-800 text-slate-100 font-semibold'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            All ({voices.length})
+          <button onClick={onClose} className="p-1.5 rounded-md text-[var(--ink-3)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)] transition cursor-pointer" title="Close">
+            <X className="w-4 h-4" />
           </button>
-          {languageOptions.map((opt) => (
+        </div>
+
+        <div className="px-4 border-b border-[var(--line)] flex gap-1 overflow-x-auto">
+          {tabs.map(({ id, label, Icon }) => (
             <button
-              key={opt.code}
-              onClick={() => setSelectedLangCategory(opt.code)}
-              className={`px-2.5 py-1 text-xs rounded-md font-medium whitespace-nowrap transition cursor-pointer ${
-                selectedLangCategory === opt.code
-                  ? 'bg-slate-800 text-slate-100 font-semibold'
-                  : 'text-slate-400 hover:text-slate-200'
+              key={id}
+              type="button"
+              onClick={() => setActiveTab(id)}
+              className={`py-2.5 px-3 text-[13px] font-medium border-b-2 -mb-px transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+                activeTab === id
+                  ? 'border-[var(--ink)] text-[var(--ink)]'
+                  : 'border-transparent text-[var(--ink-3)] hover:text-[var(--ink-2)]'
               }`}
             >
-              {opt.label} ({opt.count})
+              <Icon className="w-3.5 h-3.5" />
+              {label}
             </button>
           ))}
         </div>
-      </div>
 
-      {/* Voice Cards Grid */}
-      <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
-        {filteredVoices.map((v) => {
-          const isSelected = selectedVoiceURI === v.voice.voiceURI;
-          const isPreviewing = previewingURI === v.voice.voiceURI;
-
-          return (
-            <div
-              key={v.voice.voiceURI}
-              onClick={() => handleSelectVoice(v)}
-              className={`p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
-                isSelected
-                  ? 'bg-slate-900/90 border-indigo-500/60 ring-1 ring-indigo-500/40 shadow-xs'
-                  : 'bg-slate-900/30 hover:bg-slate-900/60 border-slate-800/80 hover:border-slate-700/80'
-              } ${v.isBuiltInStudioVoice && !cloudAvailable ? 'opacity-60' : ''}`}
-            >
-              <div>
-                <div className="flex items-start justify-between gap-2 mb-1.5">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-slate-100">{v.name}</span>
-                    {isSelected && (
-                      <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-0.5">
-                        <Check className="w-3 h-3" /> Active
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {v.isBuiltInStudioVoice ? (
-                      <span title="Cloud HD: needs internet first time, then cached offline" className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">CLOUD</span>
-                    ) : v.isLocal ? (
-                      <span title="On-device voice: works fully offline" className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">OFFLINE</span>
-                    ) : (
-                      <span title="System voice: may need internet" className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-300 border border-slate-500/30">SYSTEM</span>
-                    )}
-                    <span className="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-slate-950/60 border border-slate-800/60">
-                      {v.lang}
-                    </span>
-                  </div>
-                </div>
-                <p className="text-xs text-slate-400 leading-relaxed line-clamp-2">{v.description}</p>
-              </div>
-
-              <div className="mt-3 pt-2.5 border-t border-slate-800/60 flex items-center justify-between">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handlePreviewVoice(v);
-                  }}
-                  className={`px-2.5 py-1 text-xs rounded-lg border transition flex items-center gap-1 cursor-pointer ${
-                    isPreviewing
-                      ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40 font-medium'
-                      : 'bg-slate-800/50 text-slate-300 border-slate-700/60 hover:bg-slate-800'
-                  }`}
-                >
-                  <Play className="w-3 h-3 fill-current" />
-                  <span>{isPreviewing ? 'Auditioning...' : 'Audition'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleSelectVoice(v)}
-                  className={`px-3 py-1 text-xs font-medium rounded-lg transition cursor-pointer ${
-                    isSelected
-                      ? 'bg-indigo-600 text-white font-semibold'
-                      : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
-                  }`}
-                >
-                  {isSelected ? 'Selected' : 'Use Voice'}
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-
-  if (!isOpen) return null;
-
-  return (
-    <div
-      id="voice-selection-modal"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-5"
-    >
-      <div className="w-full max-w-4xl max-h-[88vh] flex flex-col rounded-2xl bg-slate-950 text-slate-100 shadow-2xl border border-slate-800/80 overflow-hidden font-sans">
-        {/* Layer 1: Refined Editorial Header (Height ~68px) */}
-        <div className="h-16 sm:h-[70px] px-5 py-3 bg-slate-950 border-b border-slate-800/80 flex items-center justify-between gap-4 shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 shrink-0">
-              <Headphones className="w-4 h-4 text-indigo-400" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2.5">
-                <h2 className="text-sm sm:text-base font-semibold tracking-tight text-slate-100 truncate">
-                  Voice Studio & Audio Controls
-                </h2>
-              </div>
-              <p className="text-xs text-slate-400 truncate flex items-center gap-2 mt-0.5">
-                <span>Precision narration tuning · acoustic EQ · reading velocity</span>
-                <span className="text-slate-600 hidden sm:inline">·</span>
-                <span className="text-slate-400 font-mono text-[11px] hidden sm:inline">{voices.length} voices</span>
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={handleRecommendEnglishJungVoice}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/15 text-amber-300/90 border border-amber-500/30 text-xs font-medium transition cursor-pointer"
-              title="Apply Jung & Philosophy Studio Preset"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-amber-400/90" />
-              <span>Jung & Philosophy Preset</span>
-            </button>
-
-            <button
-              onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800/60 transition cursor-pointer"
-              title="Close Voice Studio"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Layer 2: Editorial Navigation Bar (Height ~44px, No Clipping) */}
-        <div className="border-b border-slate-800/80 bg-slate-950 px-4 sm:px-5 flex items-center gap-5 sm:gap-7 overflow-x-auto scrollbar-none font-sans shrink-0">
-          <button
-            type="button"
-            onClick={() => setActiveTab('pro-library')}
-            className={`py-3 text-xs font-medium border-b-2 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-              activeTab === 'pro-library'
-                ? 'border-indigo-500 text-indigo-400 font-semibold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Gemini Voice Pack</span>
-            <span className="px-1.5 py-0.2 text-[9px] font-mono rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/25 ml-0.5">
-              HD Vault
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('voices')}
-            className={`py-3 text-xs font-medium border-b-2 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-              activeTab === 'voices'
-                ? 'border-indigo-500 text-indigo-400 font-semibold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Mic className="w-3.5 h-3.5" />
-            <span>All System Voices</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('profiles')}
-            className={`py-3 text-xs font-medium border-b-2 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-              activeTab === 'profiles'
-                ? 'border-indigo-500 text-indigo-400 font-semibold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Award className="w-3.5 h-3.5" />
-            <span>Narrator Profiles</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('cadence')}
-            className={`py-3 text-xs font-medium border-b-2 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-              activeTab === 'cadence'
-                ? 'border-indigo-500 text-indigo-400 font-semibold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Gauge className="w-3.5 h-3.5" />
-            <span>Cadence & Pacing</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('equalizer')}
-            className={`py-3 text-xs font-medium border-b-2 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-              activeTab === 'equalizer'
-                ? 'border-indigo-500 text-indigo-400 font-semibold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Sliders className="w-3.5 h-3.5" />
-            <span>Spoken EQ</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('ambience')}
-            className={`py-3 text-xs font-medium border-b-2 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-              activeTab === 'ambience'
-                ? 'border-indigo-500 text-indigo-400 font-semibold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Volume2 className="w-3.5 h-3.5" />
-            <span>Ambience</span>
-          </button>
-        </div>
-
-        {/* Preset Applied Feedback Banner */}
         {appliedPresetToast && (
-          <div className="bg-indigo-950/90 border-b border-indigo-500/40 text-indigo-200 px-4 py-2 text-xs font-medium flex items-center justify-between gap-2 shrink-0">
+          <div className="px-4 py-2 text-[13px] bg-[var(--surface-2)] border-b border-[var(--line)] text-[var(--ink-2)] flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
-              <Check className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Configured Voice Studio: <strong>{appliedPresetToast}</strong></span>
+              <Check className="w-3.5 h-3.5" />
+              {appliedPresetToast}
             </span>
-            <button
-              type="button"
-              onClick={() => setAppliedPresetToast(null)}
-              className="text-indigo-400 hover:text-indigo-200 p-1"
-            >
+            <button type="button" onClick={() => setAppliedPresetToast(null)} className="p-1 cursor-pointer">
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
         )}
 
-        {/* Layer 3: Workspace Content Panels */}
-        {/* Tab 0: Gemini Voice Pack & Studio Library */}
-        {activeTab === 'pro-library' && (
-          <ProfessionalVoiceLibrary
-            voices={voices}
-            selectedVoiceURI={selectedVoiceURI}
-            onSelectVoice={onSelectVoice}
-            currentProfile={currentProfile}
-            onSelectProfile={onSelectProfile}
-            currentCadenceMode={currentCadenceMode}
-            onSelectCadenceMode={onSelectCadenceMode}
-            currentEQPreset={currentEQPreset}
-            onSelectEQPreset={onSelectEQPreset}
-            currentAmbience={currentAmbience}
-            onSelectAmbience={onSelectAmbience}
-            onApplyPresetNotification={(name) => {
-              setAppliedPresetToast(name);
-              setTimeout(() => setAppliedPresetToast(null), 4000);
-            }}
-            documentSentences={documentSentences}
-            documentName={documentName}
-            cloudAvailable={cloudAvailable}
-          />
-        )}
-
-        {/* Tab 1: System Voices */}
-        {activeTab === 'voices' && renderVoicesTab()}
-
-        {/* Tab 2: Narrator Profiles */}
-        {activeTab === 'profiles' && (
-          <div className="flex-1 overflow-y-auto p-5 space-y-4 font-sans bg-slate-950">
-            <div className="bg-slate-900/40 p-4 rounded-xl border border-slate-800/80 space-y-1.5">
-              <h3 className="text-xs font-semibold text-slate-200 flex items-center gap-2">
-                <Award className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Narrator Linguistic Cadence & Breath Phrasing</span>
-              </h3>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Calculates breath pauses, conjunct velocities, and consonant articulations calibrated for philosophical and academic prose.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {Object.values(NARRATOR_PROFILES).map((prof) => {
-                const isSelected = currentProfile === prof.id;
-                return (
-                  <div
-                    key={prof.id}
-                    onClick={() => onSelectProfile?.(prof.id)}
-                    className={`p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
-                      isSelected
-                        ? 'bg-slate-900/90 border-indigo-500/60 ring-1 ring-indigo-500/40'
-                        : 'bg-slate-900/30 hover:bg-slate-900/60 border-slate-800/80 hover:border-slate-700/80'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <span className="text-xs font-semibold text-slate-100">{prof.name}</span>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-300">
-                          {prof.badge}
-                        </span>
-                      </div>
-                      <p className="text-xs text-indigo-300 font-medium mb-1">{prof.tagline}</p>
-                      <p className="text-xs text-slate-400 leading-relaxed">{prof.description}</p>
-                    </div>
-
-                    <div className="mt-3 pt-2.5 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                      <span>Speed: {prof.rate}×</span>
-                      <span>Breath: {prof.sentenceDelayMs}ms</span>
-                      <span className={isSelected ? 'text-indigo-400 font-semibold' : 'text-slate-500'}>
-                        {isSelected ? '✓ Active' : 'Select'}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Tab 3: Spoken Audio Equalizer */}
-        {activeTab === 'equalizer' && (
-          <div className="flex-1 overflow-y-auto p-5 space-y-4 font-sans bg-slate-950">
-            {/* DSP Visualizer */}
-            <div className="bg-slate-900/50 p-4 sm:p-5 rounded-xl border border-slate-800/80 space-y-3">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-indigo-400" />
-                  <span className="text-xs font-semibold text-slate-200">
-                    5-Band Studio Parametric Equalizer
-                  </span>
+        <div className="flex-1 overflow-y-auto">
+          {activeTab === 'voices' && (
+            <div>
+              <div className="px-5 py-3 border-b border-[var(--line)] space-y-2.5 sticky top-0 bg-[var(--surface)]">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--ink-3)]" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search voices..."
+                    className="w-full pl-8 pr-3 py-1.5 text-[13px] rounded-lg border border-[var(--line)] bg-[var(--paper)] focus:outline-none"
+                  />
                 </div>
-                <span className="text-[11px] font-mono text-indigo-300 px-2 py-0.5 rounded bg-slate-950 border border-slate-800">
-                  {PODCAST_EQ_PRESETS[currentEQPreset]?.name}
-                </span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    onClick={() => setSelectedLangCategory('all')}
+                    className={`px-2 py-1 text-xs rounded-md cursor-pointer ${selectedLangCategory === 'all' ? 'bg-[var(--surface-2)] font-semibold' : 'text-[var(--ink-3)]'}`}
+                  >
+                    All ({voices.length})
+                  </button>
+                  {languageOptions.map((opt) => (
+                    <button
+                      key={opt.code}
+                      onClick={() => setSelectedLangCategory(opt.code)}
+                      className={`px-2 py-1 text-xs rounded-md cursor-pointer ${selectedLangCategory === opt.code ? 'bg-[var(--surface-2)] font-semibold' : 'text-[var(--ink-3)]'}`}
+                    >
+                      {opt.label} ({opt.count})
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setOnlyOffline(!onlyOffline)}
+                    className={`px-2 py-1 text-xs rounded-md border ml-auto cursor-pointer ${onlyOffline ? 'border-[var(--ink)] font-semibold' : 'border-[var(--line)] text-[var(--ink-3)]'}`}
+                  >
+                    Offline only
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-xs text-[var(--ink-2)]">
+                    Rate <span className="font-mono">{previewRate.toFixed(2)}×</span>
+                    <input type="range" min="0.75" max="2.0" step="0.05" value={previewRate} onChange={(e) => setPreviewRate(parseFloat(e.target.value))} className="w-full" />
+                  </label>
+                  <label className="text-xs text-[var(--ink-2)]">
+                    Pitch <span className="font-mono">{previewPitch.toFixed(2)}×</span>
+                    <input type="range" min="0.8" max="1.2" step="0.02" value={previewPitch} onChange={(e) => setPreviewPitch(parseFloat(e.target.value))} className="w-full" />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewRate(0.98);
+                    setPreviewPitch(1.0);
+                  }}
+                  className="text-xs text-[var(--ink-3)] hover:text-[var(--ink)] flex items-center gap-1 cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" /> Reset audition tuning
+                </button>
               </div>
 
-              {/* Graphic 5-Band Equalizer Frequency Display */}
-              <div className="grid grid-cols-5 gap-2 pt-2">
-                {PODCAST_EQ_PRESETS[currentEQPreset]?.bands.map((b, i) => {
-                  const isBoost = b.gain > 0;
-                  const isCut = b.gain < 0;
-                  const heightPct = Math.min(100, Math.max(18, 50 + b.gain * 6));
-
+              <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {filteredVoices.map((v) => {
+                  const isSelected = selectedVoiceURI === v.voice.voiceURI;
+                  const isPreviewing = previewingURI === v.voice.voiceURI;
+                  const gated = v.isBuiltInStudioVoice && !cloudAvailable;
                   return (
-                    <div key={i} className="flex flex-col items-center gap-1.5 text-center">
-                      <div className="h-16 w-full bg-slate-950 rounded-lg p-1 flex items-end justify-center relative border border-slate-800/80 overflow-hidden">
-                        <div
-                          style={{ height: `${heightPct}%` }}
-                          className={`w-full rounded-sm transition-all duration-300 ${
-                            isBoost
-                              ? 'bg-indigo-500'
-                              : isCut
-                              ? 'bg-amber-500/80'
-                              : 'bg-slate-700'
-                          }`}
-                        />
-                        <span className="absolute text-[10px] font-mono text-white bottom-1 z-10 font-bold">
-                          {b.gain > 0 ? `+${b.gain}` : b.gain}dB
+                    <div key={v.voice.voiceURI} className={`${card} ${isSelected ? cardActive : ''} ${gated ? 'opacity-60' : ''}`}>
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <span className="text-[13px] font-medium">{v.name}</span>
+                        <span className="flex items-center gap-1 shrink-0">
+                          {v.isBuiltInStudioVoice ? (
+                            <span className="text-[10px] font-mono text-[var(--ink-3)]">Cloud</span>
+                          ) : v.isLocal ? (
+                            <span className="text-[10px] font-mono text-[var(--ink-3)]">Offline</span>
+                          ) : null}
+                          <span className="text-[10px] font-mono text-[var(--ink-3)]">{v.lang}</span>
                         </span>
                       </div>
-                      <span className="text-[10px] font-mono text-slate-400 truncate w-full">
-                        {(b.label || '').split(' ')[0]}
-                      </span>
+                      <p className="text-xs text-[var(--ink-2)] leading-relaxed line-clamp-2 mb-2.5">{v.description}</p>
+                      <div className="flex items-center justify-between">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePreviewVoice(v);
+                          }}
+                          className="text-xs text-[var(--ink-2)] hover:text-[var(--ink)] flex items-center gap-1 cursor-pointer"
+                        >
+                          <Play className="w-3 h-3 fill-current" />
+                          {isPreviewing ? 'Playing...' : 'Preview'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSelectVoice(v)}
+                          className={`px-3 py-1 text-xs font-medium rounded-lg transition cursor-pointer ${
+                            isSelected ? 'bg-[var(--ink)] text-[var(--paper)]' : 'bg-[var(--surface-2)] hover:opacity-80'
+                          }`}
+                        >
+                          {isSelected ? 'Selected' : 'Use'}
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
               </div>
             </div>
+          )}
 
-            {/* EQ Presets Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {Object.values(PODCAST_EQ_PRESETS).map((preset) => {
-                const isSelected = currentEQPreset === preset.id;
+          {activeTab === 'studio' && (
+            <ProfessionalVoiceLibrary
+              voices={voices}
+              selectedVoiceURI={selectedVoiceURI}
+              onSelectVoice={handleSelectVoice}
+              currentProfile={currentProfile}
+              onSelectProfile={onSelectProfile}
+              currentCadenceMode={currentCadenceMode}
+              onSelectCadenceMode={onSelectCadenceMode}
+              currentEQPreset={currentEQPreset}
+              onSelectEQPreset={onSelectEQPreset}
+              currentAmbience={currentAmbience}
+              onSelectAmbience={onSelectAmbience}
+              onApplyPresetNotification={(name) => {
+                setAppliedPresetToast(name);
+                setTimeout(() => setAppliedPresetToast(null), 4000);
+              }}
+              documentSentences={documentSentences}
+              documentName={documentName}
+              cloudAvailable={cloudAvailable}
+            />
+          )}
 
-                return (
-                  <div
-                    key={preset.id}
-                    onClick={() => {
-                      onSelectEQPreset?.(preset.id);
-                      playPodcastEQSoundCheck(preset.id);
-                    }}
-                    className={`p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
-                      isSelected
-                        ? 'bg-slate-900/90 border-indigo-500/60 ring-1 ring-indigo-500/40'
-                        : 'bg-slate-900/30 hover:bg-slate-900/60 border-slate-800/80 hover:border-slate-700/80'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <span className="text-xs font-semibold text-slate-100">{preset.name}</span>
-                        {isSelected && (
-                          <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-0.5">
-                            <Check className="w-3 h-3" /> Active
-                          </span>
-                        )}
+          {activeTab === 'reading' && (
+            <div className="p-5 space-y-6">
+              <section>
+                <h3 className="text-[13px] font-semibold mb-1 flex items-center gap-1.5">
+                  <Award className="w-3.5 h-3.5 text-[var(--ink-3)]" /> Narrator
+                </h3>
+                <p className="text-xs text-[var(--ink-3)] mb-2.5">Pacing and tone for long-form reading.</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {Object.values(NARRATOR_PROFILES).map((prof) => (
+                    <button
+                      key={prof.id}
+                      onClick={() => onSelectProfile?.(prof.id)}
+                      className={`${card} ${currentProfile === prof.id ? cardActive : 'cursor-pointer'}`}
+                    >
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-[13px] font-medium">{prof.name}</span>
+                        {currentProfile === prof.id && <Check className="w-3.5 h-3.5" />}
                       </div>
-                      <p className="text-xs text-indigo-300 font-medium mb-1">{preset.tagline}</p>
-                      <p className="text-xs text-slate-400 leading-relaxed">{preset.description}</p>
-                    </div>
+                      <p className="text-xs text-[var(--ink-2)]">{prof.tagline}</p>
+                      <p className="text-[11px] font-mono text-[var(--ink-3)] mt-1.5">
+                        {prof.rate}× · {prof.sentenceDelayMs}ms pause
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </section>
 
-                    <div className="mt-3 pt-2.5 border-t border-slate-800/60 flex items-center justify-between">
-                      <div className="text-[11px] font-mono text-slate-400 space-x-2">
-                        <span>Ratio: {preset.compression.ratio}</span>
-                        <span>Gain: {preset.compression.makeupGainDb}dB</span>
+              <section>
+                <h3 className="text-[13px] font-semibold mb-1 flex items-center gap-1.5">
+                  <Gauge className="w-3.5 h-3.5 text-[var(--ink-3)]" /> Cadence
+                </h3>
+                <p className="text-xs text-[var(--ink-3)] mb-2.5">Pause lengths at punctuation.</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {Object.values(CADENCE_MODES).map((mode) => (
+                    <button
+                      key={mode.id}
+                      onClick={() => onSelectCadenceMode?.(mode.id)}
+                      className={`${card} ${currentCadenceMode === mode.id ? cardActive : 'cursor-pointer'}`}
+                    >
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-[13px] font-medium">{mode.name}</span>
+                        {currentCadenceMode === mode.id && <Check className="w-3.5 h-3.5" />}
                       </div>
+                      <p className="text-xs text-[var(--ink-2)]">{mode.tagline}</p>
+                      <p className="text-[11px] font-mono text-[var(--ink-3)] mt-1.5">
+                        , {mode.commaPauseMs}ms · . {mode.periodPauseMs}ms · ¶ {mode.paragraphPauseMs}ms
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </div>
+          )}
+
+          {activeTab === 'sound' && (
+            <div className="p-5 space-y-6">
+              <section>
+                <h3 className="text-[13px] font-semibold mb-1">Equalizer</h3>
+                <p className="text-xs text-[var(--ink-3)] mb-2.5">Applies to cloud audio playback.</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {Object.values(PODCAST_EQ_PRESETS).map((preset) => (
+                    <div key={preset.id} className={`${card} ${currentEQPreset === preset.id ? cardActive : ''}`}>
+                      <button
+                        onClick={() => {
+                          onSelectEQPreset?.(preset.id);
+                          playPodcastEQSoundCheck(preset.id);
+                        }}
+                        className="text-left w-full cursor-pointer"
+                      >
+                        <div className="flex items-center justify-between mb-0.5">
+                          <span className="text-[13px] font-medium">{preset.name}</span>
+                          {currentEQPreset === preset.id && <Check className="w-3.5 h-3.5" />}
+                        </div>
+                        <p className="text-xs text-[var(--ink-2)]">{preset.tagline}</p>
+                      </button>
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          playPodcastEQSoundCheck(preset.id);
-                          if (voices.length > 0) {
-                            const currentVoice = voices.find((v) => v.voice.voiceURI === selectedVoiceURI);
-                            if (currentVoice) {
-                              ttsEngine.previewVoice(currentVoice.voice);
-                            }
-                          }
-                        }}
-                        className="px-2.5 py-1 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1 transition"
+                        onClick={() => playPodcastEQSoundCheck(preset.id)}
+                        className="mt-2 text-xs text-[var(--ink-2)] hover:text-[var(--ink)] flex items-center gap-1 cursor-pointer"
                       >
-                        <Volume2 className="w-3 h-3" />
-                        <span>Sound Check</span>
+                        <Volume2 className="w-3 h-3" /> Test tone
                       </button>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+                  ))}
+                </div>
+              </section>
 
-        {/* Tab 4: Cadence Modes */}
-        {activeTab === 'cadence' && (
-          <div className="flex-1 overflow-y-auto p-5 space-y-4 font-sans bg-slate-950">
-            <div className="bg-slate-900/40 p-4 rounded-xl border border-slate-800/80 space-y-1">
-              <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-                <Gauge className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Syntactic Chunking & Punctuation Pause Rhythm</span>
-              </div>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Intelligently divides long sentences along clause boundaries with structured pause intervals for deep comprehension.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {Object.values(CADENCE_MODES).map((mode) => {
-                const isSelected = currentCadenceMode === mode.id;
-
-                return (
-                  <div
-                    key={mode.id}
-                    onClick={() => onSelectCadenceMode?.(mode.id)}
-                    className={`p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
-                      isSelected
-                        ? 'bg-slate-900/90 border-indigo-500/60 ring-1 ring-indigo-500/40'
-                        : 'bg-slate-900/30 hover:bg-slate-900/60 border-slate-800/80 hover:border-slate-700/80'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <span className="text-xs font-semibold text-slate-100">{mode.nameThai}</span>
-                        {isSelected && (
-                          <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-0.5">
-                            <Check className="w-3 h-3" /> Active
-                          </span>
-                        )}
+              <section>
+                <h3 className="text-[13px] font-semibold mb-1">Ambience</h3>
+                <p className="text-xs text-[var(--ink-3)] mb-2.5">Background sound, ducked while speaking.</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {Object.values(AMBIENCE_PRESETS).map((preset) => (
+                    <button
+                      key={preset.id}
+                      onClick={() => {
+                        onSelectAmbience?.(preset.id);
+                        ambienceEngine.setAmbience(preset.id);
+                      }}
+                      className={`${card} ${currentAmbience === preset.id ? cardActive : 'cursor-pointer'}`}
+                    >
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-[13px] font-medium">{preset.name}</span>
+                        {currentAmbience === preset.id && <Check className="w-3.5 h-3.5" />}
                       </div>
-                      <p className="text-xs text-indigo-300 font-medium mb-1">{mode.tagline}</p>
-                      <p className="text-xs text-slate-400 leading-relaxed">{mode.description}</p>
-                    </div>
-
-                    <div className="mt-3 pt-2.5 border-t border-slate-800/60 grid grid-cols-3 gap-2 text-center text-[11px] font-mono">
-                      <div className="bg-slate-950 p-1.5 rounded-lg border border-slate-800/60">
-                        <span className="block text-[10px] text-slate-500">Comma (,)</span>
-                        <strong className="text-slate-300">{mode.commaPauseMs}ms</strong>
-                      </div>
-                      <div className="bg-slate-950 p-1.5 rounded-lg border border-slate-800/60">
-                        <span className="block text-[10px] text-slate-500">Period (.)</span>
-                        <strong className="text-slate-300">{mode.periodPauseMs}ms</strong>
-                      </div>
-                      <div className="bg-slate-950 p-1.5 rounded-lg border border-slate-800/60">
-                        <span className="block text-[10px] text-slate-500">Paragraph</span>
-                        <strong className="text-slate-300">{mode.paragraphPauseMs}ms</strong>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+                      <p className="text-xs text-[var(--ink-2)]">{preset.description}</p>
+                    </button>
+                  ))}
+                </div>
+              </section>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {/* Tab 5: Ambience Soundscapes */}
-        {activeTab === 'ambience' && (
-          <div className="flex-1 overflow-y-auto p-5 space-y-4 font-sans bg-slate-950">
-            <div className="bg-slate-900/40 p-4 rounded-xl border border-slate-800/80 space-y-1">
-              <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-                <Volume2 className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Adaptive Acoustic Ducking</span>
-              </div>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Background soundscapes softly duck during active speech and subtly rise during reflective pauses for deep concentration.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {Object.values(AMBIENCE_PRESETS).map((preset) => {
-                const isSelected = currentAmbience === preset.id;
-
-                return (
-                  <div
-                    key={preset.id}
-                    onClick={() => {
-                      onSelectAmbience?.(preset.id);
-                      ambienceEngine.setAmbience(preset.id);
-                    }}
-                    className={`p-3.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
-                      isSelected
-                        ? 'bg-slate-900/90 border-indigo-500/60 ring-1 ring-indigo-500/40'
-                        : 'bg-slate-900/30 hover:bg-slate-900/60 border-slate-800/80 hover:border-slate-700/80'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <span className="text-xs font-semibold text-slate-100">{preset.name}</span>
-                        {isSelected && (
-                          <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-0.5">
-                            <Check className="w-3 h-3" /> Active
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-amber-300 font-medium mb-1">{preset.badge}</p>
-                      <p className="text-xs text-slate-400 leading-relaxed">{preset.description}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Quiet Editorial Footer */}
-        <div className="h-13 px-5 border-t border-slate-800/80 bg-slate-950 flex items-center justify-between gap-3 shrink-0">
-          <span className="text-xs text-slate-400 truncate">
-            Calibrated for philosophical treatises, psychology, and academic papers.
-          </span>
+        <div className="px-5 py-3 border-t border-[var(--line)] flex items-center justify-between">
+          <span className="text-xs text-[var(--ink-3)]">Settings apply instantly.</span>
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-lg transition cursor-pointer shrink-0"
+            className="px-4 py-1.5 text-[13px] font-medium rounded-lg bg-[var(--surface-2)] hover:opacity-80 transition cursor-pointer"
           >
             Done
           </button>

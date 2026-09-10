@@ -21,7 +21,7 @@ import { DocumentItem, UserBookmark } from '../types';
 import {
   SAMPLE_DOCUMENTS,
   createDocumentFromSample,
-  parsePdfFile,
+  parsePdfArrayBuffer,
 } from '../services/pdfService';
 import {
   saveDocument,
@@ -53,6 +53,7 @@ export const DocumentLibrary: React.FC<DocumentLibraryProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [parseStatus, setParseStatus] = useState<string>('');
+  const [parseProgress, setParseProgress] = useState<{ page: number; total: number } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [bookmarks, setBookmarks] = useState<UserBookmark[]>([]);
   const [docToDelete, setDocToDelete] = useState<DocumentItem | null>(null);
@@ -77,9 +78,13 @@ export const DocumentLibrary: React.FC<DocumentLibraryProps> = ({
 
     try {
       setIsParsing(true);
+      setParseProgress(null);
       setParseStatus(`Extracting text and pages from "${file.name}"...`);
       const arrayBuffer = await file.arrayBuffer();
-      const newDoc = await parsePdfFile(file);
+      const newDoc = await parsePdfArrayBuffer(arrayBuffer, file.name, file.size, (page, total) => {
+        setParseProgress({ page, total });
+        setParseStatus(`Reading page ${page} of ${total}...`);
+      });
       setParseStatus('Saving to offline storage...');
       await saveDocument(newDoc);
       await savePdfBuffer(newDoc.id, arrayBuffer);
@@ -92,6 +97,7 @@ export const DocumentLibrary: React.FC<DocumentLibraryProps> = ({
     } finally {
       setIsParsing(false);
       setParseStatus('');
+      setParseProgress(null);
     }
   };
 
@@ -242,6 +248,20 @@ export const DocumentLibrary: React.FC<DocumentLibraryProps> = ({
                     <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
                       {parseStatus}
                     </p>
+                    {parseProgress && parseProgress.total > 0 && (
+                      <div className="w-full max-w-sm">
+                        <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                          <div
+                            className="h-full bg-blue-600 transition-all duration-150"
+                            style={{ width: `${Math.round((parseProgress.page / parseProgress.total) * 100)}%` }}
+                          />
+                        </div>
+                        <p className="text-xs font-mono text-slate-500 mt-1.5">
+                          {parseProgress.page}/{parseProgress.total} pages (
+                          {Math.round((parseProgress.page / parseProgress.total) * 100)}%)
+                        </p>
+                      </div>
+                    )}
                     <p className="text-xs text-slate-500">
                       Parsing and tokenizing sentences for high clarity offline TTS...
                     </p>

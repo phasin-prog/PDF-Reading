@@ -78,6 +78,138 @@ interface DocumentReaderProps {
   onChangeLineHeight?: (height: ReaderLineHeight) => void;
 }
 
+interface SentenceSpanProps {
+  sentence: string;
+  sIdx: number;
+  pageIdx: number;
+  isActive: boolean;
+  wordMode: boolean;
+  sentMode: boolean;
+  playing: boolean;
+  charIndex: number | null;
+  detectedLang: string;
+  themeWord: string;
+  themeSentence: string;
+  spanRef: React.Ref<HTMLSpanElement> | null;
+  onSelect: (sentenceIndex: number, pageIndex?: number) => void;
+  onInspect?: (word: string, sentence?: string) => void;
+}
+
+/**
+ * Memoized sentence: only the ACTIVE sentence re-renders on word ticks.
+ * Inactive sentences skip rendering entirely, so highlight tracks speech
+ * instead of trailing a full-page React render.
+ */
+const SentenceSpan = React.memo(
+  function SentenceSpan({
+    sentence,
+    sIdx,
+    pageIdx,
+    isActive,
+    wordMode,
+    sentMode,
+    playing,
+    charIndex,
+    detectedLang,
+    themeWord,
+    themeSentence,
+    spanRef,
+    onSelect,
+    onInspect,
+  }: SentenceSpanProps) {
+    const princetonMatch = sentence.match(/^\[(\d+)\]\s*(.*)$/);
+    const badge = princetonMatch ? (
+      <span className="font-mono text-xs text-[var(--ink-3)] mr-2 select-none" title={`Paragraph ${princetonMatch[1]}`}>
+        [{princetonMatch[1]}]
+      </span>
+    ) : null;
+    const bodyText = princetonMatch ? princetonMatch[2] : sentence;
+
+    let content: React.ReactNode;
+    if (!isActive || !wordMode) {
+      content = (
+        <span>
+          {badge}
+          <span>{bodyText}</span>
+        </span>
+      );
+    } else {
+      const tokens = tokenizeSentenceWords(bodyText, detectedLang);
+      const charIdx = charIndex ?? 0;
+      let activeTokenIdx = -1;
+      if (playing) {
+        activeTokenIdx = tokens.findIndex((t) => t.isWord && charIdx >= t.start && charIdx < t.end);
+        if (activeTokenIdx === -1) {
+          activeTokenIdx = tokens.findIndex((t) => t.isWord && t.start >= charIdx);
+        }
+        if (activeTokenIdx === -1) {
+          activeTokenIdx = tokens.findIndex((t) => t.isWord);
+        }
+      }
+      content = (
+        <span className="inline">
+          {badge}
+          {tokens.map((token, tIdx) => {
+            if (!token.isWord) {
+              return <span key={tIdx}>{token.text}</span>;
+            }
+            const isCurrentWord = playing && tIdx === activeTokenIdx;
+            return (
+              <span
+                key={tIdx}
+                id={`word-${pageIdx}-${sIdx}-${tIdx}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onInspect?.(token.text, sentence);
+                }}
+                className={`rounded-sm reader-word-highlight cursor-pointer ${
+                  isCurrentWord ? themeWord : 'hover:underline underline-offset-4'
+                }`}
+                title="ดูการออกเสียงและความหมาย"
+              >
+                {token.text}
+              </span>
+            );
+          })}
+        </span>
+      );
+    }
+
+    return (
+      <span
+        ref={spanRef}
+        id={`sentence-${pageIdx}-${sIdx}`}
+        onClick={() => {
+          // Don't hijack text selection — only seek on a clean click
+          try {
+            const sel = window.getSelection();
+            if (sel && !sel.isCollapsed) return;
+          } catch {}
+          onSelect(sIdx, pageIdx);
+        }}
+        className={`cursor-pointer rounded reader-sentence-highlight ${
+          (isActive && wordMode) || (isActive && sentMode) ? `${themeSentence} px-1` : ''
+        }`}
+        title="อ่านจากประโยคนี้"
+      >
+        {content}{' '}
+      </span>
+    );
+  },
+  (prev, next) =>
+    prev.sentence === next.sentence &&
+    prev.sIdx === next.sIdx &&
+    prev.pageIdx === next.pageIdx &&
+    prev.isActive === next.isActive &&
+    prev.wordMode === next.wordMode &&
+    prev.sentMode === next.sentMode &&
+    prev.playing === next.playing &&
+    prev.charIndex === next.charIndex &&
+    prev.detectedLang === next.detectedLang &&
+    prev.themeWord === next.themeWord &&
+    prev.themeSentence === next.themeSentence
+);
+
 export const DocumentReader: React.FC<DocumentReaderProps> = ({
   document,
   currentPageIndex,
@@ -250,71 +382,6 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
 
   const currentTheme = themeClasses[theme];
   const currentFont = fontSizes[fontSize];
-
-  const renderSentenceContent = (sentence: string, isActive: boolean, pageIdx: number, sentenceIdx: number) => {
-    const princetonMatch = sentence.match(/^\[(\d+)\]\s*(.*)$/);
-    const paragraphBadge = princetonMatch ? (
-      <span
-        className="font-mono text-xs text-[var(--ink-3)] mr-2 select-none"
-        title={`Paragraph ${princetonMatch[1]}`}
-      >
-        [{princetonMatch[1]}]
-      </span>
-    ) : null;
-
-    const bodyText = princetonMatch ? princetonMatch[2] : sentence;
-
-    if (!isActive || highlightMode !== 'word') {
-      return (
-        <span>
-          {paragraphBadge}
-          <span>{bodyText}</span>
-        </span>
-      );
-    }
-
-    const tokens = tokenizeSentenceWords(bodyText, document.detectedLanguage);
-    const charIdx = activeWordCharIndex ?? 0;
-
-    let activeTokenIdx = -1;
-    if (isPlaying) {
-      activeTokenIdx = tokens.findIndex((t) => t.isWord && charIdx >= t.start && charIdx < t.end);
-      if (activeTokenIdx === -1) {
-        activeTokenIdx = tokens.findIndex((t) => t.isWord && t.start >= charIdx);
-      }
-      if (activeTokenIdx === -1) {
-        activeTokenIdx = tokens.findIndex((t) => t.isWord);
-      }
-    }
-
-    return (
-      <span className="inline">
-        {paragraphBadge}
-        {tokens.map((token, tIdx) => {
-          if (!token.isWord) {
-            return <span key={tIdx}>{token.text}</span>;
-          }
-          const isCurrentWord = isPlaying && tIdx === activeTokenIdx;
-          return (
-            <span
-              key={tIdx}
-              id={`word-${pageIdx}-${sentenceIdx}-${tIdx}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onInspectWord?.(token.text, sentence);
-              }}
-              className={`rounded-sm reader-word-highlight cursor-pointer ${
-                isCurrentWord ? currentTheme.word : 'hover:underline underline-offset-4'
-              }`}
-              title="ดูการออกเสียงและความหมาย"
-            >
-              {token.text}
-            </span>
-          );
-        })}
-      </span>
-    );
-  };
 
   const pagesToRender =
     pageViewMode === 'continuous'
@@ -542,22 +609,25 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
                           >
                             {group.map(({ sentence, sentenceIdx: sIdx }) => {
                               const isSentenceActive = isActualCurrentPage && sIdx === currentSentenceIndex;
-                              const isWordActive = isSentenceActive && highlightMode === 'word';
-                              const isSentenceHighlightActive = isSentenceActive && highlightMode === 'sentence';
 
                               return (
-                                <span
+                                <SentenceSpan
                                   key={sIdx}
-                                  ref={isSentenceActive ? activeSentenceRef : null}
-                                  id={`sentence-${actualPageIdx}-${sIdx}`}
-                                  onClick={() => onSelectSentence(sIdx, actualPageIdx)}
-                                  className={`cursor-pointer rounded reader-sentence-highlight ${
-                                    isWordActive || isSentenceHighlightActive ? `${currentTheme.sentence} px-1` : ''
-                                  }`}
-                                  title="อ่านจากประโยคนี้"
-                                >
-                                  {renderSentenceContent(sentence, isSentenceActive, actualPageIdx, sIdx)}{' '}
-                                </span>
+                                  sentence={sentence}
+                                  sIdx={sIdx}
+                                  pageIdx={actualPageIdx}
+                                  isActive={isSentenceActive}
+                                  wordMode={highlightMode === 'word'}
+                                  sentMode={highlightMode === 'sentence'}
+                                  playing={isPlaying}
+                                  charIndex={isSentenceActive ? (activeWordCharIndex ?? 0) : null}
+                                  detectedLang={document.detectedLanguage}
+                                  themeWord={currentTheme.word}
+                                  themeSentence={currentTheme.sentence}
+                                  spanRef={isSentenceActive ? activeSentenceRef : null}
+                                  onSelect={onSelectSentence}
+                                  onInspect={onInspectWord}
+                                />
                               );
                             })}
                           </p>

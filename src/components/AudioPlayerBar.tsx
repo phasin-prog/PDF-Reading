@@ -115,7 +115,7 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({
   return (
     <div
       id="audio-player-bar"
-      className="fixed bottom-0 inset-x-0 z-40 bg-[var(--surface)] border-t border-[var(--line)]"
+      className="fixed bottom-0 inset-x-0 z-40 bg-[var(--surface)] border-t border-[var(--line)] select-none"
       style={{ boxShadow: 'var(--shadow-bar)' }}
     >
       <div className="h-0.5 w-full bg-[var(--surface-2)]">
