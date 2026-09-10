@@ -461,6 +461,17 @@ export default function App() {
       onSentenceStart: (sentenceIdx, text) => {
         setCurrentSentenceIndex(sentenceIdx);
 
+        // Cross-page warming: when the page tail starts, synthesize the next
+        // page's opening sentences in the background — a long stitched sentence
+        // is then cached and the page turn has zero fetch delay.
+        const doc = currentDocRef.current;
+        const pageIdx = currentPageIndexRef.current;
+        const page = doc?.pages[pageIdx];
+        if (doc && page && sentenceIdx >= page.sentences.length - 2) {
+          const nextPage = doc.pages[pageIdx + 1];
+          if (nextPage) ttsEngine.warmUpcoming(nextPage.sentences.slice(0, 3));
+        }
+
         // Pre-detect first word range for immediate feedback
         const wordRanges = extractWordRanges(text);
         if (wordRanges.length > 0) {
@@ -533,6 +544,7 @@ export default function App() {
           setCurrentSentenceIndex(0);
           const nextPage = doc.pages[nextPageIdx];
           if (nextPage && nextPage.sentences.length > 0) {
+            ttsEngine.setIncomingContinuation(!!doc.pages[nextPageIdx + 1]?.firstSentenceContinues);
             ttsEngine.startPlayback(nextPage.sentences, 0);
           }
         } else {
@@ -622,6 +634,7 @@ export default function App() {
     ttsEngine.setRate(rate);
     ttsEngine.setPitch(pitch);
     ttsEngine.setVolume(volume);
+    ttsEngine.setIncomingContinuation(!!currentDoc.pages[currentPageIndex + 1]?.firstSentenceContinues);
     if (selectedVoice) {
       ttsEngine.setVoiceByURI(selectedVoice.voice.voiceURI);
     }
@@ -676,6 +689,7 @@ export default function App() {
     const nextIdx = currentPageIndex + 1;
     setCurrentPageIndex(nextIdx);
     setCurrentSentenceIndex(0);
+    ttsEngine.setIncomingContinuation(!!currentDoc.pages[nextIdx + 1]?.firstSentenceContinues);
 
     const nextPage = currentDoc.pages[nextIdx];
     if (nextPage && nextPage.sentences.length > 0) {
@@ -692,6 +706,7 @@ export default function App() {
     const prevIdx = currentPageIndex - 1;
     setCurrentPageIndex(prevIdx);
     setCurrentSentenceIndex(0);
+    ttsEngine.setIncomingContinuation(!!currentDoc.pages[prevIdx + 1]?.firstSentenceContinues);
 
     const prevPage = currentDoc.pages[prevIdx];
     if (prevPage && prevPage.sentences.length > 0) {
@@ -714,6 +729,7 @@ export default function App() {
     if (!page) return;
 
     setCurrentSentenceIndex(sentenceIdx);
+    ttsEngine.setIncomingContinuation(!!currentDoc.pages[targetPageIdx + 1]?.firstSentenceContinues);
     const words = extractWordRanges(page.sentences[sentenceIdx] || '');
     if (words.length > 0) {
       setActiveWordOnce({ charIndex: 0, charLength: words[0].charLength, word: words[0].word });
@@ -730,6 +746,9 @@ export default function App() {
     if (!currentDoc || pageIdx < 0 || pageIdx >= currentDoc.pages.length) return;
     setCurrentPageIndex(pageIdx);
     setCurrentSentenceIndex(0);
+
+    // Prime page-turn flow: if the next page starts mid-sentence, don't pause at page end
+    ttsEngine.setIncomingContinuation(!!currentDoc.pages[pageIdx + 1]?.firstSentenceContinues);
 
     const page = currentDoc.pages[pageIdx];
     if (page && page.sentences.length > 0) {
@@ -813,6 +832,7 @@ export default function App() {
 
     const page = doc.pages[initialPage];
     if (page && page.sentences.length > 0) {
+      ttsEngine.setIncomingContinuation(!!doc.pages[initialPage + 1]?.firstSentenceContinues);
       ttsEngine.loadSentences(page.sentences, initialSentence);
     }
   };

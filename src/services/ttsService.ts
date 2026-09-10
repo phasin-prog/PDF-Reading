@@ -773,6 +773,24 @@ export class TTSEngine {
     return 1000 / (14 * Math.max(0.5, this.rate));
   }
 
+  /** Set when the NEXT page starts mid-sentence — page turn must flow, not pause. */
+  private incomingContinuation = false;
+
+  public setIncomingContinuation(continues: boolean) {
+    this.incomingContinuation = continues;
+  }
+
+  /** Page-end pause, shortened to a breath when the next page continues the sentence. */
+  private pageEndPause(rawSentence: string, sentenceIdx: number, modeConfig: any): number {
+    const isParagraphEnd = /\n\s*$/.test(rawSentence) || sentenceIdx === this.sentences.length - 1;
+    const pauseMs = calculatePunctuationPause(rawSentence, isParagraphEnd, modeConfig, this.sentenceDelayMs);
+    if (this.incomingContinuation && isParagraphEnd) {
+      this.incomingContinuation = false;
+      return Math.min(pauseMs, 150);
+    }
+    return pauseMs;
+  }
+
   private clearSentencePauseTimer() {
     if (this.sentencePauseTimer) {
       clearTimeout(this.sentencePauseTimer);
@@ -998,6 +1016,25 @@ export class TTSEngine {
     }
 
     return { successCount, failCount, cancelled: this.precacheCancelled };
+  }
+
+  /**
+   * Cross-page warming: fetch the NEXT page's opening sentences into cache while
+   * the current page's tail is still playing. Without this, turning the page into
+   * a long (stitched) sentence means seconds of silence on cloud voices while the
+   * whole sentence synthesizes live. Local voices return immediately (no fetch).
+   */
+  public warmUpcoming(texts: string[]): void {
+    if (!this.cloudAvailable || !this.isOnline()) return;
+    const matched = BUILTIN_STUDIO_VOICES.find((v) => v.voice.voiceURI === this.selectedVoice?.voiceURI);
+    if (!matched) return;
+    for (const raw of texts.slice(0, 3)) {
+      const clean = humanizeSpeechText(raw || '').trim();
+      if (!clean) continue;
+      // Fire-and-forget into RAM + IndexedDB cache; even if the user seeks away,
+      // a warm cache only helps future playback, so no generation gate here.
+      this.fetchStudioAudio(clean, matched.cloudVoiceName).catch(() => {});
+    }
   }
 
   // Get current offline storage statistics
@@ -1300,8 +1337,7 @@ export class TTSEngine {
             this.callbacks.onSentenceEnd?.(sentenceIdx);
 
             if (this.isPlaying && !this.isPaused) {
-              const isParagraphEnd = /\n\s*$/.test(rawSentence) || sentenceIdx === this.sentences.length - 1;
-              const pauseMs = calculatePunctuationPause(rawSentence, isParagraphEnd, modeConfig, this.sentenceDelayMs);
+              const pauseMs = this.pageEndPause(rawSentence, sentenceIdx, modeConfig);
               const totalPause = pauseMs + modeConfig.shadowingDelayMs;
 
               if (totalPause > 0) {
@@ -1449,8 +1485,7 @@ export class TTSEngine {
       this.stopInterpTimer();
       this.callbacks.onSentenceEnd?.(sentenceIdx);
       if (!this.isPlaying || this.isPaused) return;
-      const isParagraphEnd = /\n\s*$/.test(rawSentence) || sentenceIdx === this.sentences.length - 1;
-      const pauseMs = calculatePunctuationPause(rawSentence, isParagraphEnd, modeConfig, this.sentenceDelayMs);
+      const pauseMs = this.pageEndPause(rawSentence, sentenceIdx, modeConfig);
       const totalPause = pauseMs + modeConfig.shadowingDelayMs;
 
       if (totalPause > 0) {

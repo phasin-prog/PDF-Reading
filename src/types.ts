@@ -4,6 +4,8 @@ export interface PageContent {
   sentences: string[];
   paragraphs: string[];
   chapterTitle?: string;
+  /** First sentence continues a sentence split by the page break — page turn must not pause. */
+  firstSentenceContinues?: boolean;
 }
 
 export interface ChapterBookmark {

@@ -3,7 +3,9 @@ import {
   isPageFooterMarker,
   cleanPageTextAndStripFooters,
   splitIntoSentences,
+  stitchSentencesAcrossPages,
 } from '../pdfService';
+import { PageContent } from '../../types';
 
 describe('isPageFooterMarker', () => {
   it.each(['123', 'Page 12', 'p. 45', '- 7 -', '12 of 450', 'หน้า 10'])(
@@ -51,5 +53,32 @@ describe('splitIntoSentences', () => {
 
   it('returns empty for blank input', () => {
     expect(splitIntoSentences('   ')).toEqual([]);
+  });
+});
+
+describe('stitchSentencesAcrossPages', () => {
+  const page = (sentences: string[]): PageContent => ({
+    pageNumber: 1,
+    text: sentences.join(' '),
+    sentences: [...sentences],
+    paragraphs: [],
+  });
+
+  it('moves trailing fragment forward and flags continuation', () => {
+    const pages = [
+      page(['A complete sentence.', 'The story continues']),
+      page(['on the next page.', 'Another sentence.']),
+    ];
+    stitchSentencesAcrossPages(pages);
+    expect(pages[0].sentences).toEqual(['A complete sentence.']);
+    expect(pages[1].sentences[0]).toBe('The story continues on the next page.');
+    expect(pages[1].firstSentenceContinues).toBe(true);
+  });
+
+  it('leaves complete endings untouched', () => {
+    const pages = [page(['Done here.']), page(['Fresh start here.'])];
+    stitchSentencesAcrossPages(pages);
+    expect(pages[0].sentences).toEqual(['Done here.']);
+    expect(pages[1].firstSentenceContinues).toBeUndefined();
   });
 });

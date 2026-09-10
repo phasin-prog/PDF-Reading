@@ -256,6 +256,7 @@ export function stitchSentencesAcrossPages(pages: PageContent[]): void {
     // Move fragment forward: drop tail here, prepend to next head
     cur.sentences = cur.sentences.slice(0, -1);
     next.sentences = [tail.trim() + ' ' + head, ...next.sentences.slice(1)];
+    next.firstSentenceContinues = true;
   }
 }
 
