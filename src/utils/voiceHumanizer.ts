@@ -216,12 +216,25 @@ export function calculateDynamicSentenceUtterance(
     volume = Math.min(1.0, baseVolume * 1.05);
     cadenceDescription = 'Emphatic Energetic Cadence';
   }
-  // 3. Dense philosophical/psychoanalytic statement (>160 chars or containing colons/semicolons)
-  else if (trimmed.length > 160 || /[:;]/.test(trimmed)) {
-    rate = baseRate * 0.92 * yearBoost; // deliberate, contemplative pace for complex concepts
-    pitch = basePitch * 0.97; // warm, resonant pitch
-    pauseBonusMs = 180;
-    cadenceDescription = 'Deep Philosophical Measured Cadence';
+  // 3. Dense philosophical statement: long AND clause-heavy (commas/colons force
+  // parsing pauses). Long but CLEAN sentences (no clause breaks) flow fast instead.
+  else if (trimmed.length > 160) {
+    const hasClauseBreaks = /[,;:—–]|--/.test(trimmed);
+    if (hasClauseBreaks) {
+      rate = baseRate * 0.92 * yearBoost; // deliberate, contemplative pace for complex concepts
+      pitch = basePitch * 0.97; // warm, resonant pitch
+      pauseBonusMs = 180;
+      cadenceDescription = 'Deep Philosophical Measured Cadence';
+    } else {
+      rate = baseRate * 1.0 * yearBoost; // clean flow, no parsing pauses needed
+      pauseBonusMs = 120;
+      cadenceDescription = 'Flowing Narrative Cadence';
+    }
+  } else if (/[:;]/.test(trimmed)) {
+    rate = baseRate * 0.94 * yearBoost;
+    pitch = basePitch * 0.98;
+    pauseBonusMs = 140;
+    cadenceDescription = 'Structured Clause Cadence';
   }
   // 4. Short transition clause (<40 chars or starting with transitional adverbs)
   else if (trimmed.length < 40 || /^(however|therefore|thus|furthermore|for instance|for example|in fact|indeed)\b/i.test(trimmed)) {

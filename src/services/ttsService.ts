@@ -1388,8 +1388,9 @@ export class TTSEngine {
       return;
     }
 
-    const clauses = splitSentenceIntoClauses(rawSentence, this.currentCadenceMode);
-    let clauseIdx = 0;
+    // One utterance per SENTENCE — never split into clauses. The browser's own
+    // engine pauses naturally at commas/periods; splitting created 3-4 word
+    // fragments with ~200ms startup gaps that read as stuttering.
     let interpLastEmitted = -1;
 
     // Highlight interpolation: advances the highlight by estimated word timing
@@ -1443,159 +1444,119 @@ export class TTSEngine {
       }, 60);
     };
 
-    const playNextClause = () => {
+    const finishSentence = () => {
       if (gen !== this.generation) return;
+      this.stopInterpTimer();
+      this.callbacks.onSentenceEnd?.(sentenceIdx);
       if (!this.isPlaying || this.isPaused) return;
+      const isParagraphEnd = /\n\s*$/.test(rawSentence) || sentenceIdx === this.sentences.length - 1;
+      const pauseMs = calculatePunctuationPause(rawSentence, isParagraphEnd, modeConfig, this.sentenceDelayMs);
+      const totalPause = pauseMs + modeConfig.shadowingDelayMs;
 
-      if (clauseIdx >= clauses.length) {
-        this.stopInterpTimer();
-        this.callbacks.onSentenceEnd?.(sentenceIdx);
-        if (this.isPlaying && !this.isPaused) {
-          const isParagraphEnd = /\n\s*$/.test(rawSentence) || sentenceIdx === this.sentences.length - 1;
-          const pauseMs = calculatePunctuationPause(rawSentence, isParagraphEnd, modeConfig, this.sentenceDelayMs);
-          const totalPause = pauseMs + modeConfig.shadowingDelayMs;
-
-          if (totalPause > 0) {
-            this.sentencePauseTimer = setTimeout(() => {
-              if (gen !== this.generation) return;
-              if (this.isPlaying && !this.isPaused) {
-                this.nextSentence();
-              }
-            }, totalPause);
-          } else {
+      if (totalPause > 0) {
+        this.sentencePauseTimer = setTimeout(() => {
+          if (gen !== this.generation) return;
+          if (this.isPlaying && !this.isPaused) {
             this.nextSentence();
           }
-        }
-        return;
-      }
-
-      const clause = clauses[clauseIdx];
-      const clauseTextToSpeak = humanizeSpeechText(clause.text);
-
-      if (!clauseTextToSpeak.trim()) {
-        clauseIdx++;
-        playNextClause();
-        return;
-      }
-
-      const dynamicParams = calculateDynamicSentenceUtterance(
-        clause.text,
-        this.rate * modeConfig.rateMultiplier,
-        this.pitch,
-        this.volume
-      );
-
-      const eqConfig = PODCAST_EQ_PRESETS[this.currentEQPreset] || PODCAST_EQ_PRESETS['pro-podcast'];
-
-      const utterance = new SpeechSynthesisUtterance(clauseTextToSpeak);
-      // Zero-API path: cloud voices can't synthesize locally, so resolve an
-      // on-device voice for the document language instead of the browser default.
-      let utteranceVoice: SpeechSynthesisVoice | null = null;
-      if (this.selectedVoice && !TTSEngine.isCloudVoiceURI(this.selectedVoice.voiceURI)) {
-        utteranceVoice = this.selectedVoice;
+        }, totalPause);
       } else {
-        utteranceVoice = this.getBestLocalVoiceForLanguage(this.targetLang);
-      }
-      if (utteranceVoice) {
-        utterance.voice = utteranceVoice;
-        utterance.lang = utteranceVoice.lang;
-      }
-      utterance.rate = dynamicParams.rate;
-      utterance.pitch = Math.max(0.5, Math.min(2.0, dynamicParams.pitch * eqConfig.pitchFormantShift));
-      utterance.volume = Math.max(0.1, Math.min(1.0, dynamicParams.volume * eqConfig.volumePeakCap));
-
-      utterance.onstart = () => {
-        if (gen !== this.generation) return;
-        this.markSynthActivity();
-        ambienceEngine.setSpeakingState(true);
-        if (clauseIdx === 0) {
-          this.callbacks.onSentenceStart?.(sentenceIdx, rawSentence);
-        }
-
-        const firstIdx = wordRanges.findIndex((w) => w.charIndex >= clause.startCharIndex);
-        startInterp(firstIdx === -1 ? 0 : firstIdx);
-      };
-
-      utterance.onboundary = (e: SpeechSynthesisEvent) => {
-        if (gen !== this.generation) return;
-        this.markSynthActivity();
-        if (e.name === 'word' || !e.name) {
-          this.hasReceivedNativeBoundary = true;
-          this.stopSimulatedWordTimer();
-
-          const absCharIndex = clause.startCharIndex + e.charIndex;
-
-          let matchedIdx = wordRanges.findIndex(
-            (w) => absCharIndex >= w.charIndex && absCharIndex < w.charIndex + w.charLength + 2
-          );
-          if (matchedIdx === -1) {
-            matchedIdx = wordRanges.findIndex((w) => w.charIndex >= absCharIndex);
-          }
-
-          if (matchedIdx !== -1) {
-            // Snap interpolation to the true spoken position
-            this.interpBaseIdx = matchedIdx;
-            this.interpBaseAt = performance.now();
-            emitWord(matchedIdx);
-          } else {
-            const targetCharLength = (e as any).charLength || 1;
-            this.callbacks.onWordBoundary?.({
-              sentenceIndex: sentenceIdx,
-              charIndex: absCharIndex,
-              charLength: targetCharLength,
-              word: rawSentence.substring(absCharIndex, absCharIndex + targetCharLength),
-            });
-          }
-        }
-      };
-
-      utterance.onend = () => {
-        if (gen !== this.generation) return;
-        ambienceEngine.setSpeakingState(false);
-        this.stopSimulatedWordTimer();
-        this.stopInterpTimer();
-        clauseIdx++;
-        if (clauseIdx < clauses.length) {
-          const pause = Math.max(80, clause.pauseAfterMs);
-          this.sentencePauseTimer = setTimeout(() => {
-            if (gen !== this.generation) return;
-            if (this.isPlaying && !this.isPaused) {
-              playNextClause();
-            }
-          }, pause);
-        } else {
-          playNextClause();
-        }
-      };
-
-      utterance.onerror = (e) => {
-        if (gen !== this.generation) return;
-        this.stopSimulatedWordTimer();
-        this.stopInterpTimer();
-        if (e.error !== 'interrupted' && e.error !== 'canceled') {
-          console.warn('TTS Speech error:', e);
-          this.callbacks.onError?.(new Error(`Speech error: ${e.error}`));
-          // Avoid stall: advance to next clause/sentence on real errors
-          clauseIdx++;
-          if (this.isPlaying && !this.isPaused) {
-            this.sentencePauseTimer = setTimeout(() => {
-              if (gen !== this.generation) return;
-              if (this.isPlaying && !this.isPaused) {
-                if (clauseIdx < clauses.length) playNextClause();
-                else this.nextSentence();
-              }
-            }, 300);
-          }
-        }
-      };
-
-      this.currentUtterance = utterance;
-      if (this.synth) {
-        this.synth.speak(utterance);
+        this.nextSentence();
       }
     };
 
-    playNextClause();
+    const dynamicParams = calculateDynamicSentenceUtterance(
+      rawSentence,
+      this.rate * modeConfig.rateMultiplier,
+      this.pitch,
+      this.volume
+    );
+
+    const eqConfig = PODCAST_EQ_PRESETS[this.currentEQPreset] || PODCAST_EQ_PRESETS['pro-podcast'];
+
+    const utterance = new SpeechSynthesisUtterance(textToSpeak);
+    // Zero-API path: cloud voices can't synthesize locally, so resolve an
+    // on-device voice for the document language instead of the browser default.
+    let utteranceVoice: SpeechSynthesisVoice | null = null;
+    if (this.selectedVoice && !TTSEngine.isCloudVoiceURI(this.selectedVoice.voiceURI)) {
+      utteranceVoice = this.selectedVoice;
+    } else {
+      utteranceVoice = this.getBestLocalVoiceForLanguage(this.targetLang);
+    }
+    if (utteranceVoice) {
+      utterance.voice = utteranceVoice;
+      utterance.lang = utteranceVoice.lang;
+    }
+    utterance.rate = dynamicParams.rate;
+    utterance.pitch = Math.max(0.5, Math.min(2.0, dynamicParams.pitch * eqConfig.pitchFormantShift));
+    utterance.volume = Math.max(0.1, Math.min(1.0, dynamicParams.volume * eqConfig.volumePeakCap));
+
+    utterance.onstart = () => {
+      if (gen !== this.generation) return;
+      this.markSynthActivity();
+      ambienceEngine.setSpeakingState(true);
+      this.callbacks.onSentenceStart?.(sentenceIdx, rawSentence);
+      startInterp(0);
+    };
+
+    utterance.onboundary = (e: SpeechSynthesisEvent) => {
+      if (gen !== this.generation) return;
+      this.markSynthActivity();
+      if (e.name === 'word' || !e.name) {
+        this.hasReceivedNativeBoundary = true;
+        this.stopSimulatedWordTimer();
+
+        // e.charIndex is relative to the spoken (humanized) text; fuzzy-match
+        // back to the display word ranges.
+        const spokenIdx: number = e.charIndex || 0;
+        const approxChar = Math.round((spokenIdx / Math.max(1, textToSpeak.length)) * rawSentence.length);
+
+        let matchedIdx = wordRanges.findIndex(
+          (w) => approxChar >= w.charIndex && approxChar < w.charIndex + w.charLength + 2
+        );
+        if (matchedIdx === -1) {
+          matchedIdx = wordRanges.findIndex((w) => w.charIndex >= approxChar);
+        }
+
+        if (matchedIdx !== -1) {
+          // Snap interpolation to the true spoken position
+          this.interpBaseIdx = matchedIdx;
+          this.interpBaseAt = performance.now();
+          emitWord(matchedIdx);
+        }
+      }
+    };
+
+    utterance.onend = () => {
+      if (gen !== this.generation) return;
+      ambienceEngine.setSpeakingState(false);
+      this.stopSimulatedWordTimer();
+      finishSentence();
+    };
+
+    utterance.onerror = (e) => {
+      if (gen !== this.generation) return;
+      this.stopSimulatedWordTimer();
+      this.stopInterpTimer();
+      if (e.error !== 'interrupted' && e.error !== 'canceled') {
+        console.warn('TTS Speech error:', e);
+        this.callbacks.onError?.(new Error(`Speech error: ${e.error}`));
+        // Avoid stall: advance on real errors
+        if (this.isPlaying && !this.isPaused) {
+          this.sentencePauseTimer = setTimeout(() => {
+            if (gen !== this.generation) return;
+            if (this.isPlaying && !this.isPaused) {
+              this.nextSentence();
+            }
+          }, 300);
+        }
+      }
+    };
+
+    this.currentUtterance = utterance;
+    if (this.synth) {
+      this.synth.speak(utterance);
+    }
   }
 
   private notifyState() {

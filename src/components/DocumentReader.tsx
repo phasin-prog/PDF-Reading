@@ -208,6 +208,61 @@ const SentenceSpan = React.memo(
     prev.themeSentence === next.themeSentence
 );
 
+/**
+ * Paragraph grouping cache: grouping is pure over the sentences array, so compute
+ * once per page and reuse across word-tick renders (WeakMap frees with the doc).
+ */
+type ParaGroup = { sentenceIdx: number; sentence: string }[][];
+const paraGroupCache = new WeakMap<string[], ParaGroup>();
+
+function getParagraphGroups(page: { sentences: string[]; paragraphs: string[] }): ParaGroup {
+  const cached = paraGroupCache.get(page.sentences);
+  if (cached) return cached;
+
+  const groups: ParaGroup = [];
+  let currentGroup: { sentenceIdx: number; sentence: string }[] = [];
+  const sentences = page.sentences;
+
+  const hasBracketMarkers = sentences.some((s) => /^\s*\[§?\d+\]/.test(s) || /\[§?\d+\]/.test(s));
+
+  if (hasBracketMarkers) {
+    sentences.forEach((sentence, sIdx) => {
+      const isBracketStart = /^\s*\[§?\d+\]/.test(sentence);
+      if (isBracketStart && currentGroup.length > 0) {
+        groups.push(currentGroup);
+        currentGroup = [];
+      }
+      currentGroup.push({ sentenceIdx: sIdx, sentence });
+    });
+    if (currentGroup.length > 0) groups.push(currentGroup);
+  } else if (page.paragraphs && page.paragraphs.length > 0) {
+    let pIndex = 0;
+    sentences.forEach((sentence, sIdx) => {
+      currentGroup.push({ sentenceIdx: sIdx, sentence });
+      const currentGroupText = currentGroup.map((g) => g.sentence).join(' ');
+      const targetPara = page.paragraphs[pIndex] || '';
+      if (pIndex < page.paragraphs.length - 1 && targetPara.length > 0 && currentGroupText.length >= targetPara.length - 10) {
+        groups.push(currentGroup);
+        currentGroup = [];
+        pIndex++;
+      }
+    });
+    if (currentGroup.length > 0) groups.push(currentGroup);
+  } else {
+    sentences.forEach((sentence, sIdx) => {
+      currentGroup.push({ sentenceIdx: sIdx, sentence });
+      if (currentGroup.length >= 4 || sentence.length > 280) {
+        groups.push(currentGroup);
+        currentGroup = [];
+      }
+    });
+    if (currentGroup.length > 0) groups.push(currentGroup);
+  }
+
+  paraGroupCache.set(page.sentences, groups);
+  return groups;
+}
+
 export const DocumentReader: React.FC<DocumentReaderProps> = ({
   document,
   currentPageIndex,
@@ -271,8 +326,16 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
   }, [zenMode, onToggleZenMode]);
 
   useEffect(() => {
-    if (autoScroll && activeSentenceRef.current) {
-      activeSentenceRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Scroll only when the active sentence leaves the viewport — smooth-scrolling
+    // on every sentence causes visible jank during continuous speech.
+    if (autoScroll && activeSentenceRef.current && containerRef.current) {
+      const el = activeSentenceRef.current;
+      const cRect = containerRef.current.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      const margin = cRect.height * 0.2;
+      if (elRect.top < cRect.top + margin || elRect.bottom > cRect.bottom - margin) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
     }
   }, [currentSentenceIndex, currentPageIndex, autoScroll, pageViewMode]);
 
@@ -509,6 +572,7 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
               <article
                 key={page.pageNumber}
                 id={`reader-page-${page.pageNumber}`}
+                style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 800px' }}
                 className={`mx-auto w-full ${lineWidths[lineWidth]} ${
                   pageHeightMode === 'fit' ? '' : 'min-h-[250mm]'
                 } px-1 sm:px-2 py-2 rounded-xl border transition-colors ${
@@ -545,44 +609,7 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
                 <div className={`${fontFamilies[fontFamily]} ${currentFont.text} ${lineHeights[lineHeight]} ${currentTheme.text}`}>
                   {page.sentences.length > 0 ? (
                     (() => {
-                      const paragraphGroups: { sentenceIdx: number; sentence: string }[][] = [];
-                      let currentGroup: { sentenceIdx: number; sentence: string }[] = [];
-
-                      const hasBracketMarkers = page.sentences.some((s) => /^\s*\[§?\d+\]/.test(s) || /\[§?\d+\]/.test(s));
-
-                      if (hasBracketMarkers) {
-                        page.sentences.forEach((sentence, sIdx) => {
-                          const isBracketStart = /^\s*\[§?\d+\]/.test(sentence);
-                          if (isBracketStart && currentGroup.length > 0) {
-                            paragraphGroups.push(currentGroup);
-                            currentGroup = [];
-                          }
-                          currentGroup.push({ sentenceIdx: sIdx, sentence });
-                        });
-                        if (currentGroup.length > 0) paragraphGroups.push(currentGroup);
-                      } else if (page.paragraphs && page.paragraphs.length > 0) {
-                        let pIndex = 0;
-                        page.sentences.forEach((sentence, sIdx) => {
-                          currentGroup.push({ sentenceIdx: sIdx, sentence });
-                          const currentGroupText = currentGroup.map((g) => g.sentence).join(' ');
-                          const targetPara = page.paragraphs[pIndex] || '';
-                          if (pIndex < page.paragraphs.length - 1 && targetPara.length > 0 && currentGroupText.length >= targetPara.length - 10) {
-                            paragraphGroups.push(currentGroup);
-                            currentGroup = [];
-                            pIndex++;
-                          }
-                        });
-                        if (currentGroup.length > 0) paragraphGroups.push(currentGroup);
-                      } else {
-                        page.sentences.forEach((sentence, sIdx) => {
-                          currentGroup.push({ sentenceIdx: sIdx, sentence });
-                          if (currentGroup.length >= 4 || sentence.length > 280) {
-                            paragraphGroups.push(currentGroup);
-                            currentGroup = [];
-                          }
-                        });
-                        if (currentGroup.length > 0) paragraphGroups.push(currentGroup);
-                      }
+                      const paragraphGroups = getParagraphGroups(page);
 
                       const indentClasses: Record<ParagraphIndent, string> = {
                         none: '',

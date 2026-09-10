@@ -58,4 +58,14 @@ describe('calculateDynamicSentenceUtterance', () => {
     const out = calculateDynamicSentenceUtterance('He said (quite clearly) that it works.', 1.0, 1.0);
     expect(out.rate).toBeGreaterThanOrEqual(0.97);
   });
+
+  it('reads long clean sentences fast, slows only clause-heavy ones', () => {
+    const clean = 'The collective unconscious contains the whole spiritual heritage of all mankind and it is reborn anew in the brain structure of every single individual human being alive today in our world';
+    const dense = 'The collective unconscious contains the whole spiritual heritage of all mankind: it is reborn anew, in the brain structure of every single individual; human being alive today in our world';
+    const fast = calculateDynamicSentenceUtterance(clean, 1.0, 1.0);
+    const slow = calculateDynamicSentenceUtterance(dense, 1.0, 1.0);
+    expect(clean.length).toBeGreaterThan(160);
+    expect(fast.rate).toBeGreaterThanOrEqual(1.0);
+    expect(slow.rate).toBeLessThan(fast.rate);
+  });
 });
