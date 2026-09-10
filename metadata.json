@@ -1,0 +1,6 @@
+{
+  "name": "PDF Voice - Offline Document Reader & TTS",
+  "description": "Listen to PDFs and documents with natural multilingual text-to-speech, interactive synchronized highlighting, and full offline playback on the go.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
