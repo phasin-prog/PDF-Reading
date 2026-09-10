@@ -156,6 +156,7 @@ const SentenceSpan = React.memo(
               <span
                 key={tIdx}
                 id={`word-${pageIdx}-${sIdx}-${tIdx}`}
+                data-active-word={isCurrentWord ? 'true' : undefined}
                 onClick={(e) => {
                   e.stopPropagation();
                   onInspect?.(token.text, sentence);
@@ -325,6 +326,10 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [zenMode, onToggleZenMode]);
 
+  // Manual-scroll suspension: user scrolling pauses follow mode briefly
+  const lastManualScroll = useRef(0);
+  const followRaf = useRef(0);
+
   useEffect(() => {
     // Scroll only when the active sentence leaves the viewport — smooth-scrolling
     // on every sentence causes visible jank during continuous speech.
@@ -338,6 +343,28 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
       }
     }
   }, [currentSentenceIndex, currentPageIndex, autoScroll, pageViewMode]);
+
+  // Word-level follow-along: keep the spoken word in view (karaoke-style).
+  // rAF-throttled, block:'nearest' (no page jumps), suspended 4s after manual scroll.
+  useEffect(() => {
+    if (!autoScroll || !isPlaying || !containerRef.current) return;
+    if (Date.now() - lastManualScroll.current < 4000) return;
+    cancelAnimationFrame(followRaf.current);
+    followRaf.current = requestAnimationFrame(() => {
+      const container = containerRef.current;
+      if (!container) return;
+      const active = container.querySelector('[data-active-word="true"]') as HTMLElement | null;
+      if (!active) return;
+      const cRect = container.getBoundingClientRect();
+      const elRect = active.getBoundingClientRect();
+      if (elRect.width === 0 && elRect.height === 0) return; // offscreen-skipped by content-visibility
+      const margin = 120;
+      if (elRect.top < cRect.top + margin || elRect.bottom > cRect.bottom - margin) {
+        active.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    });
+    return () => cancelAnimationFrame(followRaf.current);
+  }, [activeWordCharIndex, currentSentenceIndex, currentPageIndex, autoScroll, isPlaying]);
 
   if (!document) {
     return (
@@ -456,6 +483,12 @@ export const DocumentReader: React.FC<DocumentReaderProps> = ({
     <div
       ref={containerRef}
       id="document-reader-container"
+      onWheel={() => {
+        lastManualScroll.current = Date.now();
+      }}
+      onTouchMove={() => {
+        lastManualScroll.current = Date.now();
+      }}
       className={`flex-1 overflow-y-auto pb-36 pt-4 px-4 sm:px-6 ${currentTheme.bg}`}
     >
       <div className="max-w-4xl mx-auto">
